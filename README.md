@@ -1,15 +1,37 @@
 # Rizzstack
 
-**The autonomous software development factory.** You authorize an outcome; Rizzstack decomposes it into
-frozen contracts, worker agents implement it in sandboxes, independent reviewers verify it, integration
-gates merge it on green CI, and you make the human decisions through explicit, audited gates.
+> **You describe the software you want. A factory of worker agents builds it — under contracts,
+> verification, and independent review — and brings you only the decisions that require a human.**
 
-> **Status: pre-1.0, under heavy active development.** This README carries the live state of the stack
-> as of **November 16, 2026**. Everything below is verified against the actual repositories — every
-> claim traces to a merge, a running service, or a record entry. What is *not* yet true is labeled,
-> never implied.
+Rizzstack is an autonomous software development factory: it takes an authorized outcome and runs the
+entire path — decomposition into frozen contracts, parallel implementation by sandboxed worker agents,
+fail-closed verification, independent review by a *different* model, integration gates on green CI,
+docs and deployment — while reserving judgment calls (accept a feature, approve a rename, set a budget)
+for the human, delivered through an audited decision queue rather than chat interruptions.
+
+It is built from four independent elements glued by versioned contracts — use one, some, or all:
+
+| | Element | One-line job | Repo |
+|---|---|---|---|
+| 📜 | **workflow** | the rulebook: contracts, acceptance criteria, provenance, schemas | [mojomast/workflow](https://github.com/mojomast/workflow) |
+| 🐝 | **bundlebees** | the factory floor: orchestration, leases, verification, review, merge gates | [mojomast/bundlebees](https://github.com/mojomast/bundlebees) |
+| ⚙️ | **hyvv** | the workers: sandboxed execution, model routing, receipts, budgets | [mojomast/hyvv](https://github.com/mojomast/hyvv) |
+| 🖥️ | **orbitdesktop** | the control room: workbench, the live Observatory dashboard, approvals | [mojomast/orbitdesktop](https://github.com/mojomast/orbitdesktop) |
+
+**What makes it different:** governance is the product. Every agent action is authorized, leased,
+verified, and independently reviewed *before* it can touch your main branch — and the evidence trail
+is hash-chained, so "the agent says it passed" is never the standard. The system is agent-agnostic by
+contract: swap model providers, agent harnesses, or even the orchestrator itself (a non-LLM reference
+coordinator is on the roadmap) without changing the guarantees.
+
+**Proof it works:** in one day of operation the factory merged **~40 pull requests** across the four
+repos — built, verified, reviewed, and integrated by worker agents themselves, including the very
+mechanisms that run the factory. The live truth table below separates what is proven from what is
+honestly still in flight.
 
 ---
+
+> **Status: pre-1.0, under heavy active development** (as of **November 16, 2026**).
 
 ## The loop
 
