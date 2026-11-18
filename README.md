@@ -4,7 +4,21 @@
 
 Give a team of coding agents a feature, a budget, and a definition of done. Rizzstack splits the work into bounded tasks, gives each worker (a *bee*) a set of files it may change, and checks the returned patches against the tests agreed on before coding began. You get a report that ties each requirement to a Git revision and its evidence. You decide whether to ship.
 
-[Try the offline demo](#try-the-offline-demo) · [Meet the four projects](#meet-the-four-projects) · [How it was built](#how-it-was-built) · [Build log](NEWS.md)
+[Explore The Hive](#the-hive) · [Try the offline demo](#try-the-offline-demo) · [Meet the four projects](#meet-the-four-projects) · [Build log](NEWS.md)
+
+## The Hive
+
+The Hive is Orbit Desktop’s read-only console for supervising a shift. Start with **Needs attention**: select an owner question to see what decision is pending, which job it concerns, and when its source was last read. To investigate running work, select an attempt and follow its public ID into the Rails activity ledger.
+
+![The Hive factory floor with 14 attempts in flight, a verification queue over target, and the selected owner question beside its source record.](docs/images/hive-shift-control.png)
+
+*A simulated shift, captured in Chromium. The command bar counts 14 attempts in flight and one pending owner decision. The inspector shows the recorded canary question; opening it does not approve it.*
+
+**Why is work still queued if a draft PR already exists?** In the example below, the workbench compares the draft with a frozen contract. Three criteria have evidence; `AC-004` does not. The feature stays queued so the coordinator can reconcile what remains.
+
+![The Hive draft-coverage workbench showing partial coverage, three of four criteria with evidence, missing criterion AC-004, and no change to the feature queue.](docs/images/hive-draft-coverage.png)
+
+Both screenshots come from the [Hive review candidate](https://github.com/mojomast/orbitdesktop/pull/48), using fixture data rather than a production workspace. [Run the same shift locally](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/extensions/rizzstack-hive/README.md) without credentials, or read [what the host can share with the console](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/docs/HIVE_OPERATIONS.md).
 
 ## Try the offline demo
 
@@ -54,5 +68,5 @@ The contracts are the connection points. A coordinator can speak Hyvv’s `/v1` 
 ## What’s available now
 
 - **Runnable today:** the offline demo above and the [cold-start acceptance exercise](https://github.com/mojomast/workflow/tree/main/acceptance), which takes the next step into the real BundleBees dispatch, verification, and integration path. For live installations, use each component’s release and setup notes.
-- **In review — Rails, the activity ledger:** the [four-repository buildout](https://github.com/mojomast/workflow/pull/91) connects worker events to a shared query engine, CLI, and Orbit inspector. In a local acceptance run, the worker disconnected and restarted; the importer resumed without duplicating events, and Chromium and the CLI selected the same original event ID. The [build log](NEWS.md#four-repository-buildout-in-review) links the 30-minute reconnect results, native Windows checks, and remaining live canary gate.
+- **Rails, the activity ledger:** the [Workflow](https://github.com/mojomast/workflow/pull/91), [Hyvv](https://github.com/mojomast/hyvv/pull/26), and [Orbit](https://github.com/mojomast/orbitdesktop/pull/46) changes have merged; the [BundleBees coordinator changes](https://github.com/mojomast/bundlebees/pull/82) are under review. In a local acceptance run, the importer resumed after a worker restart without duplicating events, and Chromium and the CLI selected the same original event ID. The [release decision](https://github.com/mojomast/workflow/blob/2d45b5958abed555b910cbddd5bdfe5e8b22144d/evidence/rails-rc/release/DECISION.md) distinguishes the qualified source revisions from the outstanding live Windows canary and human acceptance.
 - **For maintainers:** [NEWS.md](NEWS.md) keeps the dated operational history. The [coordinator playbook](https://github.com/mojomast/workflow/blob/main/docs/19-coordinator-playbook.md) explains authorization, review, and the human decisions required for merge, release, and deployment.
