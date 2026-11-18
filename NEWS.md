@@ -8,6 +8,14 @@ failures is worthless.
 
 ## 2026-11-17
 
+### Four-repository buildout in review
+
+[Workflow #91](https://github.com/mojomast/workflow/pull/91) ties together the worker ([Hyvv #26](https://github.com/mojomast/hyvv/pull/26)), coordinator ([BundleBees #82](https://github.com/mojomast/bundlebees/pull/82)), and operator workspace ([Orbit Desktop #46](https://github.com/mojomast/orbitdesktop/pull/46)). Five local acceptance cases passed, including a coding campaign that went from a failing test to an integrated patch. The browser and CLI identified the same worker event after a restart. The Rails evidence attachment validated; the enclosing RETURN manifest still differed from Workflow’s schema at seven field paths. See the [acceptance record](https://github.com/mojomast/workflow/blob/60f61961c73aeb841a87bd52e38dde5577518b40/specs/rails-rollout.md).
+
+- **Reconnects:** In a [30-minute local soak](https://github.com/mojomast/workflow/blob/60f61961c73aeb841a87bd52e38dde5577518b40/evidence/rails-bench-linux.md) against a 100,000-event ledger, the HTTP client found all 164 events written while connected and all 164 written while disconnected. Reconnect to replayed event took 20.7 ms at the 95th percentile on that Linux guest.
+- **Windows worker:** The [native Windows CI job](https://github.com/mojomast/hyvv/actions/runs/44168250607/job/134341551899) passed the launcher journal, authenticated loopback export, and cross-process storage checks.
+- **Live canary:** The [offline rehearsal](https://github.com/mojomast/workflow/blob/60f61961c73aeb841a87bd52e38dde5577518b40/contrib/core-review/README.md) produced four expected failures on the seed and four passes on the reference implementation. It created zero worker attempts. The owner approved the live run; worker registration and the [pre-dispatch runbook gate](https://github.com/mojomast/workflow/blob/60f61961c73aeb841a87bd52e38dde5577518b40/docs/m2-canary-runbook.md) still need live evidence.
+
 ### Landed
 
 **39 pull requests merged across the four repos today**, all through the full gate chain
