@@ -20,6 +20,8 @@ The Hive is Orbit Desktop’s read-only console for supervising a shift. Start w
 
 Both screenshots come from the [Hive review candidate](https://github.com/mojomast/orbitdesktop/pull/48), using fixture data rather than a production workspace. [Run the same shift locally](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/extensions/rizzstack-hive/README.md) without credentials, or read [what the host can share with the console](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/docs/HIVE_OPERATIONS.md).
 
+The [Mission Control review](docs/hive-mission-control.md) adds selected Rails history and owner-enrolled coordinator reports. Its native docket example covers **two of three leased files**; the three-of-four **criterion** rehearsal above is a separate observation.
+
 ## Try the offline demo
 
 The fastest way to understand Rizzstack is to watch it **reject a patch that makes a test pass by changing the test**. You only need Git and Python 3. After cloning, the demo runs offline with scripted workers and a scripted reviewer; it needs no model account, API key, or running services.
