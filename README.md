@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/rizzstack-hero.jpg" alt="The rizzstack wordmark and its four-hex mark over a night-time honeycomb field with glowing bees. Tagline: a software development factory where bees write the code and contracts and evidence decide what ships." width="1280"></p>
+
 # Rizzstack
 
 **A software development factory for people who want to delegate the coding and still know exactly what they’re shipping.**
@@ -20,9 +22,25 @@ The Hive is Orbit Desktop’s read-only console for supervising a shift. Start w
 
 Both screenshots come from the [Hive review candidate](https://github.com/mojomast/orbitdesktop/pull/48), using fixture data rather than a production workspace. [Run the same shift locally](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/extensions/rizzstack-hive/README.md) without credentials, or read [what the host can share with the console](https://github.com/mojomast/orbitdesktop/blob/3e0f0838fd65810bbb1d477b1422b3bc1082c816/docs/HIVE_OPERATIONS.md).
 
+More of the same local demo, captured headless in Chromium from the Hive's static app (`orbitdesktop` `main` at `d3a115c`, fixture data, no live host):
+
+![The Hive incident recorder replaying a duplicate-receipt investigation: step 31 of 35 selected, the combined-tree check AC-REPLAY-ONCE passing, the factory floor's eight stations, and the investigation panel showing the verifier record with its code revision and contract digest.](docs/images/hive-incident-replay.png)
+
+*Incident replay (`?demo=replay`). Step through 35 recorded origin events from the first failure to the combined-tree pass; the investigation panel names the verifier record, its Git revision and contract digest.*
+
+![The Hive operational workbench listing five recorded jobs with their task counts, base revisions and states, beside the pending owner decision for the receiver gate.](docs/images/hive-workbench.png)
+
+*The operational workbench (`?demo=shift`, **Workbench**). Work, Workers, Queue, Decisions, Evidence and Usage index the same projection. A pending owner decision is shown, never approved.*
+
+![The Hive release desk: Workflow #92's software qualified but release on hold, with a revision ledger of qualified candidate heads, 665 passed required cases and component CI.](docs/images/hive-release-desk.png)
+
+*The release desk. Software qualification and the release decision are separate records: here the software passed and the release is held for the Windows canary and a human receiver.*
+
 The [Mission Control review](docs/hive-mission-control.md) adds selected Rails history and owner-enrolled coordinator reports. Its native docket example covers **two of three leased files**; the three-of-four **criterion** rehearsal above is a separate observation.
 
 ## Try the offline demo
+
+<p align="center"><img src="docs/images/art-verify-gate.jpg" alt="Illustration: glowing hexagonal tokens travel along a track through a ring-shaped scanner; those that pass glow mint green, and one is diverted to a side track in red." width="720"></p>
 
 The fastest way to understand Rizzstack is to watch it **reject a patch that makes a test pass by changing the test**. You only need Git and Python 3. After cloning, the demo runs offline with scripted workers and a scripted reviewer; it needs no model account, API key, or running services.
 
@@ -34,7 +52,19 @@ python3 reference/run_demo.py --out demo-run
 
 Two workers change pricing and receipt labels in a toy shop. Their patches pass verification and the combined test suite. A third worker touches a file outside its assignment (`scope_violation`); a fourth weakens an approved test (`tests_tampered`). Neither rejected patch reaches integration.
 
+![Terminal output of the offline reference demo: W1-pricing and W2-labels accepted; W0 rejected at contract review; W3 rejected for scope_violation and W4 for tests_tampered; integration passed in a bwrap sandbox; then acdd-lint reports 4 contracts, 10 evidence records, 0 problems with signatures checked.](docs/images/offline-demo-run.png)
+
+*A real run of the commands above, followed by `acdd-lint` checking every contract and signed evidence record it produced.*
+
 Open **`demo-run/ACCEPTANCE.md`** to see the verdict for each requirement. Follow a reference into `demo-run/evidence/` to compare the failing test on the baseline (**RED**) with the passing test on the patch (**GREEN**). The [demo guide](https://github.com/mojomast/workflow/tree/main/reference) explains the records and how the teaching setup differs from production verification.
+
+![The demo's ACCEPTANCE.md, rendered: W1-pricing accepted with valid red, green, refactor, integration and review phases and each criterion AC-001 to AC-005 linked to its evidence; W4-weakened-tests not accepted, green and integration not run, rejected as tests_tampered.](docs/images/demo-acceptance-report.png)
+
+*`demo-run/ACCEPTANCE.md` from the same run (W1 and W4 sections). `not run` is never counted as passed.*
+
+![Side-by-side verifier records for W1-pricing: on RED, AC-001 and AC-002 fail with a behavioral_failure classification; on GREEN, both pass. Both were produced by the verifier in a bwrap sandbox. Below, the two rejection records: tests_tampered and scope_violation.](docs/images/demo-red-green-evidence.png)
+
+*The RED and GREEN records behind that report, and the two rejections, read with `jq`.*
 
 ## What you get from a run
 
@@ -47,6 +77,8 @@ Open **`demo-run/ACCEPTANCE.md`** to see the verdict for each requirement. Follo
 | **What am I being asked to accept?** | A [`RETURN` manifest](https://github.com/mojomast/workflow/blob/main/docs/26-return-manifest.md) links each criterion to its checks and records what failed or never ran. A worker finishing, a verifier passing a patch, and an owner accepting a feature are three separate events. |
 
 ## Meet the four projects
+
+<p align="center"><img src="docs/images/art-four-layers.jpg" alt="Illustration: four stacked hexagonal glass plates linked by glowing threads, the top plate in honey amber, with small glowing bees around the stack." width="720"></p>
 
 This repository is the map. Each component has its own implementation, setup instructions, and release history. Start with the part you need.
 
