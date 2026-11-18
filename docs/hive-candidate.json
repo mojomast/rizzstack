@@ -1,0 +1,22 @@
+{
+  "name": "Hive Mission Control read-only review candidate",
+  "decision": "HOLD",
+  "activation": "disabled",
+  "orbit_review": "https://github.com/mojomast/orbitdesktop/pull/48",
+  "coordinator_publication_review": "https://github.com/mojomast/bundlebees/pull/93",
+  "rails_test_tuple": {
+    "workflow": "38f7e360b62fe53284ef6680604bba9d0d2fc230",
+    "bundlebees": "07e02ba86ec0b2bec8753ae3260718547f020e28",
+    "hyvv": "35a4d0cf9473b3d30a2b8eb0b71ab9d10b6509a8",
+    "orbitdesktop": "aad5d02f128456d35d7f26cee8d4bab38f47582f"
+  },
+  "separate_docket_producer": "df6a684c51fed3a9f873cdbe6dc9de16daf21ce7",
+  "docket_producer_as_rails_replacement": "failed frozen inventory",
+  "reviewed_app_entry": "/apps/rizzstack-hive-45ee654988881bd4e8bac461/index.html",
+  "orbit_hermes_archive_sha256": "eb88158df77878af353ea053444646169cd3b4f88f893de09c47139d6ff66da1",
+  "spec_sha256": "38d160ee45cded3429c14929d11180f1fd60091d01f2792cbd86a6537027168b",
+  "historical_rails_evidence_commit": "2d45b5958abed555b910cbddd5bdfe5e8b22144d",
+  "installed": null,
+  "loaded": null,
+  "receiver": "pending"
+}
