@@ -27,7 +27,7 @@ Pinned `98b795a` = v0.1.0 (tagged, released; catalog listing PR pending) · http
 
 ## CI gates
 
-`ci.yml`: `test` (pytest) and `desktop` (`npm test`, `npm run check-bundle`). No slop-lint or gitleaks job in this repo (see `codemap/gaps.md`). Token budgets (SKILL.md ≤2000, tool schema ≤500) are enforced by tests.
+`ci.yml`: `test` (pytest) and `desktop` (`npm test`, `npm run check-bundle`). `gitleaks.yml`: `secret-scan`. `slop-lint.yml`: vendored-copy check, then a blocking ratchet against `slop-baseline.json` (owner-reviewed via CODEOWNERS). Actions are pinned by full SHA. Token budgets (SKILL.md ≤2000, tool schema ≤500) are enforced by tests.
 
 ## Change recipes
 
