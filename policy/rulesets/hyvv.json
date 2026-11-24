@@ -1,0 +1,77 @@
+{
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/main"
+      ]
+    }
+  },
+  "enforcement": "active",
+  "id": 27158949,
+  "name": "main",
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "parameters": {
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ],
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0,
+        "required_review_thread_resolution": false,
+        "required_reviewers": []
+      },
+      "type": "pull_request"
+    },
+    {
+      "parameters": {
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "ci-gate",
+            "integration_id": 15368
+          },
+          {
+            "context": "bee-ci/unit",
+            "integration_id": 15368
+          },
+          {
+            "context": "bee-ci/contract",
+            "integration_id": 15368
+          },
+          {
+            "context": "bee-ci/release-assets",
+            "integration_id": 15368
+          },
+          {
+            "context": "bee-ci/installer-dry-run",
+            "integration_id": 15368
+          },
+          {
+            "context": "bee-ci/scan",
+            "integration_id": 15368
+          },
+          {
+            "context": "slop-lint",
+            "integration_id": 15368
+          }
+        ],
+        "strict_required_status_checks_policy": true
+      },
+      "type": "required_status_checks"
+    }
+  ],
+  "target": "branch"
+}
