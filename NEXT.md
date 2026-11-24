@@ -67,6 +67,16 @@ Five tracks, one PR per track, each checked against `main` before changing anyth
 - **D — CI hygiene:** pinned actions, gitleaks and slop-lint for uirizz; gitleaks for rizzstack; first CI for orbit-control-plane; a check command for vendored slop-lint copies.
 - **E — decisions for the owner:** next milestone, first coordinated release, Rails qualification runs, branch cleanup, the legacy launcher, whether `codemap/invariants.md` stays public, and a balance rule for future waves.
 
+## Next milestone
+
+**Decided 2026-11-24 (owner): option B.** Decision #25 splits the next milestone in two.
+
+- **M-A — a stranger can run Orbit locally:** F11 (`workflow/plans/packets/F11-runnable-by-anyone.md`), then F12 (`workflow/plans/packets/F12-connect-github-repo-picker.md`), which is Orbit #27 ([orbitdesktop #27](https://github.com/mojomast/orbitdesktop/pull/27), now retargeted to `main`).
+- **M-B — a stranger can lend a worker:** F15 (`workflow/plans/packets/F15-relay.md`) -> F18 (`workflow/plans/packets/F18-revocable-tokens.md`) -> F16/F17 (`workflow/plans/packets/F16-tailcat.md`, `workflow/plans/packets/F17-join-probing.md`) -> F19 (`workflow/plans/packets/F19-live-host-join-install.md`).
+- **Separate later owner yeses:** the F19 throwaway rehearsal, the ghcr image publish and any live-host install. None of them is granted by this decision.
+
+Option A (one big milestone) and option C (M-A only) were not chosen.
+
 ## Next: wave 1, cheap gaps and CI hygiene
 
 Seven bees in parallel, all under preflight. Several overlap Track D above; whichever lands first
