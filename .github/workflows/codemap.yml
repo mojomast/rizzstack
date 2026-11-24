@@ -57,6 +57,16 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Report pins behind upstream main
+      - name: Fail when a pin is behind upstream main (or upstream is unreadable)
+        shell: bash
         run: |
-          { echo "## codemap pins vs upstream"; echo '```'; python3 scripts/codemap/build.py --upstream; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          echo "## codemap pins vs upstream" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          python3 scripts/codemap/build.py --upstream --strict | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=codemap pins stale::bump sha in scripts/codemap/sources.json, regenerate, run --check (see codemap/change-recipes.md)"
+          fi
+          exit "$status"

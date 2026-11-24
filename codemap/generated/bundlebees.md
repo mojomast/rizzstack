@@ -41,7 +41,7 @@ CODEOWNERS: .github/CODEOWNERS: /slop-baseline.json @mojomast
 
 ## HTTP paths referenced in non-test code
 
-`/api/local-workers`, `/api/plugins/bundlebees`, `/api/todos`, `/api/todos/not-a-real-id`, `/v1/attempts`, `/v1/chat/completions`, `/v1/config`, `/v1/containers`, `/v1/health`, `/v1/landing/events`, `/v1/projects`, `/v1/provision/capabilities`, `/v1/provision/cleanup`, `/v1/provision/project`, `/v1/provision/receipts/{key}`, `/v1/rails/events`, `/v1/route`
+`/api/local-workers`, `/api/plugins/bundlebees`, `/api/plugins/bundlebees/approval/{request_id}`, `/api/plugins/bundlebees/approvals`, `/api/plugins/bundlebees/approvals/{request_id}/decision`, `/api/plugins/bundlebees/attempts`, `/api/plugins/bundlebees/attempts/{attempt_id}`, `/api/plugins/bundlebees/attempts/{attempt_id}/cancel`, `/api/plugins/bundlebees/attempts/{attempt_id}/events`, `/api/plugins/bundlebees/attempts/{attempt_id}/review`, `/api/plugins/bundlebees/concurrency`, `/api/plugins/bundlebees/containers`, `/api/plugins/bundlebees/health`, `/api/plugins/bundlebees/host-prompt`, `/api/plugins/bundlebees/models`, `/api/plugins/bundlebees/projects`, `/api/plugins/bundlebees/verify-results`, `/api/todos`, `/api/todos/not-a-real-id`, `/v1/attempts`, `/v1/chat/completions`, `/v1/config`, `/v1/containers`, `/v1/health`, `/v1/landing/events`, `/v1/projects`, `/v1/provision/capabilities`, `/v1/provision/cleanup`, `/v1/provision/project`, `/v1/provision/receipts/{key}`, `/v1/rails/events`, `/v1/route`
 
 ## Contract / schema ids mentioned
 
