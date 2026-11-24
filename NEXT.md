@@ -46,7 +46,7 @@ them. Wave 0 makes every dispatch pass the same gates first. Owner approvals for
 | ID | Goal | Where | Status |
 |---|---|---|---|
 | W0-1 | `preflight`: the same gates as `_dispatch`, no launcher call | bundlebees `preflight.py`, `tools.py`, `cli.py`, `docs/risk-tiers.md` | **open PR** [bundlebees #252](https://github.com/mojomast/bundlebees/pull/252) |
-| W0-2 | risk docstrings say what is actually enforced (codemap gaps #4) | bundlebees `risk.py`, `risk_policy.py` | **open PR** [bundlebees #251](https://github.com/mojomast/bundlebees/pull/251) |
+| W0-2 | risk docstrings say what is actually enforced (codemap gaps #4) | bundlebees `risk.py`, `risk_policy.py` | **merged** [bundlebees #251](https://github.com/mojomast/bundlebees/pull/251) |
 | W0-3 | Orbit flags ungated local-worker creates (warn-only by default) | orbitdesktop `server/local-workers-route.mjs` | **merged** [orbitdesktop #88](https://github.com/mojomast/orbitdesktop/pull/88) |
 | W0-4 | `build.py --slice` and `--impact`, so briefs get a mechanical cut of the map | rizzstack `scripts/codemap/` | **merged** [rizzstack #6](https://github.com/mojomast/rizzstack/pull/6) |
 | W0-P | pin workflow and hyvv `main` in bundlebees before the Hermes host update | bundlebees pins | **open PR** [bundlebees #253](https://github.com/mojomast/bundlebees/pull/253) |

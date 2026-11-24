@@ -37,7 +37,7 @@ Pinned `ce37230` · https://github.com/mojomast/orbit-control-plane · generated
 
 ## Tests and CI
 
-`npm test` runs `orbit-control-plane/tests/*.test.mjs` (node:test). rizzobs: `python -m pytest tests` in the plugin dir (set `UIRIZZ_SRC` to also compile cards with uirizz). **No GitHub Actions workflows exist in this repo at the pinned SHA** (see `codemap/gaps.md`).
+`npm test` runs `orbit-control-plane/tests/*.test.mjs` (node:test). rizzobs: `python -m pytest tests` in the plugin dir (set `UIRIZZ_SRC` to also compile cards with uirizz). CI (`.github/workflows/ci.yml`): `test` (Node 22), `rizzobs` (pytest), `secret-scan` (gitleaks); `slop-lint.yml` runs report-only.
 
 ## Change recipes
 
