@@ -1,0 +1,25 @@
+# rizzstack
+
+> rizzstack is a software development factory: coding agents ("bees") work in sandboxes on leased files, and contracts plus test evidence decide what ships. Six repos: workflow (method + protocol), hyvv (worker host, /v1 API), bundlebees (coordinator Hermes plugin), orbitdesktop (operator workspace), orbit-control-plane (dashboard + live observability), uirizz (A2UI cards in Hermes chat).
+
+## Code map
+- [L0 overview](https://github.com/mojomast/rizzstack/blob/main/codemap/README.md): one-screen map of the four layers, pins, the core flow and first rules
+- [Cross-repo contracts](https://github.com/mojomast/rizzstack/blob/main/codemap/contracts.md): every API, schema id and vendored package, with source of truth and consumers
+- [Change recipes](https://github.com/mojomast/rizzstack/blob/main/codemap/change-recipes.md): what to touch, in order, for common cross-repo changes
+- [Invariants and approval gates](https://github.com/mojomast/rizzstack/blob/main/codemap/invariants.md)
+- [Architecture views](https://github.com/mojomast/rizzstack/blob/main/codemap/architecture.md): context, containers, flows
+- [Machine index](https://github.com/mojomast/rizzstack/blob/main/codemap/generated/index.json): JSON summary of all repos
+
+## Per repo (L1)
+- [workflow](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/workflow.md)
+- [hyvv](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/hyvv.md)
+- [bundlebees](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/bundlebees.md)
+- [orbitdesktop](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/orbitdesktop.md)
+- [orbit-control-plane](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/orbit-control-plane.md)
+- [uirizz](https://github.com/mojomast/rizzstack/blob/main/codemap/L1/uirizz.md)
+
+## Optional
+- [Protocol map](https://github.com/mojomast/rizzstack/blob/main/docs/protocol.md)
+- [Workflow method chapters](https://github.com/mojomast/workflow/tree/main/docs)
+- [hyvv /v1 OpenAPI](https://github.com/mojomast/hyvv/blob/main/contract/v1/openapi.yaml)
+- [Known gaps](https://github.com/mojomast/rizzstack/blob/main/codemap/gaps.md)
