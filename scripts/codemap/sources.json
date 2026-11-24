@@ -19,7 +19,7 @@
     {
       "name": "bundlebees",
       "url": "https://github.com/mojomast/bundlebees",
-      "sha": "88990f6ddd0cc980b19b0fd420f882f2ad421b2c",
+      "sha": "00029df9f967bcce5eb968c9647336dd9b13b691",
       "layer": 3,
       "role": "Coordinator Hermes plugin: briefs, leases, dispatch, risk tiers, sandboxed verify, integrate"
     },
