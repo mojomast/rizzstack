@@ -5,42 +5,42 @@
     {
       "name": "workflow",
       "url": "https://github.com/mojomast/workflow",
-      "sha": "55e361367a05096bb94c02dd0497f9f6f446965d",
+      "sha": "ae9c080262ab593e7643e2fba79cd51a018f25df",
       "layer": 1,
       "role": "Method + protocol: ACDD contracts, evidence formats, schemas, observability snapshot, reference demo, lint tools"
     },
     {
       "name": "hyvv",
       "url": "https://github.com/mojomast/hyvv",
-      "sha": "f53c81f066baec4360b5fd047f92fa48617255f8",
+      "sha": "fdd235446e8fb28f8074fa06ea5c6ee1e466e129",
       "layer": 2,
       "role": "Worker host: runs agent sandboxes (bees), speaks the versioned /v1 worker API, emits attempts, artifacts and Rails events"
     },
     {
       "name": "bundlebees",
       "url": "https://github.com/mojomast/bundlebees",
-      "sha": "88990f6ddd0cc980b19b0fd420f882f2ad421b2c",
+      "sha": "82b911820c70ebfa1c9c20b9dc6eb9f1633cd9bb",
       "layer": 3,
       "role": "Coordinator Hermes plugin: briefs, leases, dispatch, risk tiers, sandboxed verify, integrate"
     },
     {
       "name": "orbitdesktop",
       "url": "https://github.com/mojomast/orbitdesktop",
-      "sha": "b665820d715cb8e4dcd361f1b5e65e5305265aa0",
+      "sha": "0765a932eca46768030132cb99da8f742924bc24",
       "layer": 4,
       "role": "Operator workspace (Orbit): browser desktop, terminals, Hermes sessions, Observatory, Hive console, collab board, local workers"
     },
     {
       "name": "orbit-control-plane",
       "url": "https://github.com/mojomast/orbit-control-plane",
-      "sha": "5a6668137fbbb0297c57206a6c2405a0da10edf7",
+      "sha": "bc56669ef72674316246fb59fdbfd7295f8639f3",
       "layer": 4,
       "role": "Remote dashboard + read model for Orbit: board, attempts, intents, approvals, live observability (rizzobs plugin + collector)"
     },
     {
       "name": "uirizz",
       "url": "https://github.com/mojomast/uirizz",
-      "sha": "a9cf07b39bd0d2371bcb5ed473552f4beea7090f",
+      "sha": "302f1ac2898426959d95698cbe759d15a24aee33",
       "layer": 4,
       "role": "Hermes plugin rendering A2UI v1.0 cards in chat (a2ui_render); typed-yes approvals, hash-chained audit"
     }
