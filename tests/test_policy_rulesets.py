@@ -3,7 +3,7 @@
 policy/rulesets/<repo>.json is the ruleset applied to each repo's default
 branch: no deletion, no force-push, PRs required (0 approvals: one maintainer,
 whose chat approval is the human review), required checks including the
-aggregate `ci-gate`, and no bypass actors. "Up to date before merge" stays off
+aggregate `ci-gate` and `gitleaks`, and no bypass actors. "Up to date before merge" stays off
 except where a repo already had it (workflow, hyvv), which is kept.
 """
 import json
@@ -52,6 +52,8 @@ class RulesetPolicyTests(unittest.TestCase):
             checks = rule(load(repo), "required_status_checks")["parameters"]
             names = [c["context"] for c in checks["required_status_checks"]]
             self.assertIn("ci-gate", names, repo)
+            # A full-history secret scan is required everywhere (hyvv names it bee-ci/scan).
+            self.assertTrue({"gitleaks", "bee-ci/scan"} & set(names), repo)
             for c in checks["required_status_checks"]:
                 self.assertEqual(c.get("integration_id"), GITHUB_ACTIONS_APP_ID, (repo, c))
             self.assertEqual(checks["strict_required_status_checks_policy"], repo in STRICT_KEPT, repo)
