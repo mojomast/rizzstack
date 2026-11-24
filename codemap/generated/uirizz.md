@@ -33,6 +33,10 @@
 ## CI workflows
 
 - `.github/workflows/ci.yml` (CI; on: push, pull_request): `test`, `desktop`
+
+## HTTP paths referenced in non-test code
+
+`/api/plugins/uirizz/actions`, `/api/plugins/uirizz/audit`, `/api/plugins/uirizz/surfaces/{surface_id}`
 ## Ranked map (most-referenced first)
 
 Files ranked by PageRank over import + identifier-reference edges; symbols under each file are its top-level definitions ordered by incoming references. Tests are excluded.

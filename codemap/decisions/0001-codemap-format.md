@@ -25,7 +25,7 @@ rizzstack is six repos (~3,000 files) with no shared code imports: they meet at 
 1. **Layered, token-budgeted:** L0 `codemap/README.md` (≤1.8k tokens) → L1 `codemap/L1/<repo>.md` (≤3k each) + cross-cutting pages → L2 generated `<repo>.md` (≤6k) → JSON for programmatic queries. Budgets are enforced by `--verify-docs`.
 2. **Hand-written vs generated are separate files.** Narrative never sits inside generated output; generated files are never hand-edited.
 3. **Pinned, reproducible:** generation is deterministic from `sources.json` (full SHAs); no timestamps in output.
-4. **Scrubbed by construction:** the generator redacts IPs, tailnet hostnames, private host names and key-shaped strings; `--verify-docs` refuses narrative that contains them.
+4. **Scrubbed by construction:** the generator redacts IPs, tailnet hostnames and key-shaped strings; `--verify-docs` refuses narrative that contains them. Machine-local private names are detected from a gitignored file and fail the check rather than being rewritten, so output never depends on the machine (Nov 24 review, item 6).
 5. **Stdlib-only Python** so CI and any agent can run it without installs.
 
 ## Consequences

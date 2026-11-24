@@ -67,7 +67,11 @@
   "uirizz_plugin/urls.py":"Fail-closed public-https URL admission.",
   "uirizz_plugin/validate.py":"Admit A2UI v1.0 payloads against the official Basic Catalog allowlist."
  },
- "http_paths":{},
+ "http_paths":{
+  "/api/plugins/uirizz/actions":["dashboard/plugin_api.py"],
+  "/api/plugins/uirizz/audit":["dashboard/plugin_api.py"],
+  "/api/plugins/uirizz/surfaces/{surface_id}":["dashboard/plugin_api.py"]
+ },
  "env_names":{},
  "contract_ids":{},
  "files":[

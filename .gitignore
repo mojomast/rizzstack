@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+# machine-local private-name patterns for codemap --verify-docs (never commit)
+scripts/codemap/private-names.local

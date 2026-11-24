@@ -9,6 +9,7 @@ Not part of the four-layer stack. Listed so an agent knows they exist and where 
 | [slop-factory](https://github.com/mojomast/slop-factory) | Pitch site for community compute and agents building together (shared inference, lent worker slots, group board, cross-agent review). Proposal only; nothing multi-person is built. |
 | [jackpotsyndicate](https://github.com/mojomast/jackpotsyndicate) | Deterministic pachinko / coin-pusher roguelite built with rizzstack and Hermes; the campaign that shaped continuity design. |
 | [hermes-agent](https://github.com/mojomast/hermes-agent) | Fork of Hermes Agent, the runtime the plugins target. |
+| [fpsrizz](https://github.com/mojomast/fpsrizz) | Bulkhead: browser game engine for rapid prototyping in strict TypeScript (plugin kernel, public SDK, ~40 presets) with agent tooling: a JSON-RPC dev protocol, a stdio MCP server, `AGENTS.md` and `llms.txt`. No GitHub description; summary from its README. |
 
 ## Hermes plugins (hackathon entries and friends)
 
