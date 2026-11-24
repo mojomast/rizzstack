@@ -1,10 +1,10 @@
 <p align="center"><img src="docs/images/rizzstack-hero.jpg" alt="The rizzstack wordmark and its four-hex mark over a night-time honeycomb field with glowing bees. Tagline: a software development factory where bees write the code and contracts and evidence decide what ships." width="1280"></p>
 
-# Rizzstack
+# rizzstack
 
 **A software development factory for people who want to delegate the coding and still know exactly what they’re shipping.**
 
-Give a team of coding agents a feature, a budget, and a definition of done. Rizzstack splits the work into bounded tasks, gives each worker (a *bee*) a set of files it may change, and checks the returned patches against the tests agreed on before coding began. You get a report that ties each requirement to a Git revision and its evidence. You decide whether to ship.
+Give a team of coding agents a feature, a budget, and a definition of done. rizzstack splits the work into bounded tasks, gives each worker (a *bee*) a set of files it may change, and checks the returned patches against the tests agreed on before coding began. You get a report that ties each requirement to a Git revision and its evidence. You decide whether to ship.
 
 [Explore The Hive](#the-hive) · [Try the offline demo](#try-the-offline-demo) · [Meet the four projects](#meet-the-four-projects) · [Build log](NEWS.md)
 
@@ -42,7 +42,7 @@ The [Mission Control review](docs/hive-mission-control.md) adds selected Rails h
 
 <p align="center"><img src="docs/images/art-verify-gate.jpg" alt="Illustration: glowing hexagonal tokens travel along a track through a ring-shaped scanner; those that pass glow mint green, and one is diverted to a side track in red." width="720"></p>
 
-The fastest way to understand Rizzstack is to watch it **reject a patch that makes a test pass by changing the test**. You only need Git and Python 3. After cloning, the demo runs offline with scripted workers and a scripted reviewer; it needs no model account, API key, or running services.
+The fastest way to understand rizzstack is to watch it **reject a patch that makes a test pass by changing the test**. You only need Git and Python 3. After cloning, the demo runs offline with scripted workers and a scripted reviewer; it needs no model account, API key, or running services.
 
 ```sh
 git clone --depth 1 https://github.com/mojomast/workflow.git
@@ -68,7 +68,7 @@ Open **`demo-run/ACCEPTANCE.md`** to see the verdict for each requirement. Follo
 
 ## What you get from a run
 
-| Question you’d ask at code review | What Rizzstack gives you |
+| Question you’d ask at code review | What rizzstack gives you |
 |---|---|
 | **What was this worker allowed to do?** | A frozen contract names the acceptance criteria. A signed file lease binds the assignment to a revision and a set of paths. A worker cannot expand its own assignment. |
 | **Would the change pass outside the worker’s environment?** | BundleBees applies the patch in a fresh checkout, checks its scope and approved tests, runs verification in a sandbox, and scans for secrets. Patches that pass individually still have to pass the combined suite. |
@@ -95,14 +95,18 @@ The contracts are the connection points. A coordinator can speak Hyvv’s `/v1` 
 
 ## How it was built
 
-[Kyle Durepos](https://github.com/mojomast) developed Rizzstack while working with agents on games, creative tools, and Hermes plugins. The [project history](https://github.com/mojomast/workflow/blob/main/docs/07-projects.md) traces those builds. Kyle directed the work; coordinator agents broke it into briefs, and coding agents worked in disposable sandboxes. Some of the most useful parts of the stack came from runs that went wrong.
+[Kyle Durepos](https://github.com/mojomast) developed rizzstack while working with agents on games, creative tools, and Hermes plugins. The [project history](https://github.com/mojomast/workflow/blob/main/docs/07-projects.md) traces those builds. Kyle directed the work; coordinator agents broke it into briefs, and coding agents worked in disposable sandboxes. Some of the most useful parts of the stack came from runs that went wrong.
 
 **A chat window made a poor scheduler.** During the Jackpot Syndicate build, workers could finish while the coordinator waited for Kyle to say “what’s next?” The team reconstructed six pauses from the transcript. They found 22 file leases but no campaign-level job to resume. That distinction shaped the [campaign continuity design](https://github.com/mojomast/workflow/blob/main/docs/31-campaign-continuity.md): persist the authorized objective and the completed steps so the next coordinator can recover them without reading the chat.
 
-**The factory had to grade its own work by the same rules.** Four bees built `acdd-lint`, the tool that checks Rizzstack’s contracts and test evidence. All **35 linter tests passed**. The sandboxed integration step failed, though, so the run recorded **zero accepted changes and two rejected integration waves**. The [build record](https://github.com/mojomast/workflow/tree/main/evidence/2026-11-12-acdd-lint-dogfood) includes the contracts, commits, test results, and the failure. A reviewer can reconstruct why the tool worked *and* why that run didn’t earn acceptance.
+**The factory had to grade its own work by the same rules.** Four bees built `acdd-lint`, the tool that checks rizzstack’s contracts and test evidence. All **35 linter tests passed**. The sandboxed integration step failed, though, so the run recorded **zero accepted changes and two rejected integration waves**. The [build record](https://github.com/mojomast/workflow/tree/main/evidence/2026-11-12-acdd-lint-dogfood) includes the contracts, commits, test results, and the failure. A reviewer can reconstruct why the tool worked *and* why that run didn’t earn acceptance.
 
 ## What’s available now
 
+*Checked against each repository’s `main`, its CHANGELOG and `workflow/plans/backlog.json` on 24 November 2026 (America/Toronto).*
+
 - **Runnable today:** the offline demo above and the [cold-start acceptance exercise](https://github.com/mojomast/workflow/tree/main/acceptance), which takes the next step into the real BundleBees dispatch, verification, and integration path. For live installations, use each component’s release and setup notes.
-- **Rails, the activity ledger:** the [Workflow](https://github.com/mojomast/workflow/pull/91), [Hyvv](https://github.com/mojomast/hyvv/pull/26), and [Orbit](https://github.com/mojomast/orbitdesktop/pull/46) changes have merged; the [BundleBees coordinator changes](https://github.com/mojomast/bundlebees/pull/82) are under review. In a local acceptance run, the importer resumed after a worker restart without duplicating events, and Chromium and the CLI selected the same original event ID. The [release decision](https://github.com/mojomast/workflow/blob/2d45b5958abed555b910cbddd5bdfe5e8b22144d/evidence/rails-rc/release/DECISION.md) distinguishes the qualified source revisions from the outstanding live Windows canary and human acceptance.
+- **Rails, the activity ledger: code landed in all four repos.** [Workflow #91](https://github.com/mojomast/workflow/pull/91), [Hyvv #26](https://github.com/mojomast/hyvv/pull/26), [Orbit #46](https://github.com/mojomast/orbitdesktop/pull/46) and the [BundleBees coordinator changes (#82)](https://github.com/mojomast/bundlebees/pull/82) are merged (#82 on 17 November). All 22 `RAILS-*` slices in the backlog (R00–R18, including R17A–D) are `landed`, backed by the four-repository acceptance run [`mojomast/workflow#44227465033`](https://github.com/mojomast/workflow/actions/runs/44227465033). In a local acceptance run, the importer resumed after a worker restart without duplicating events, and Chromium and the CLI selected the same original event ID. The Rails **release** is still on hold: the [release decision](https://github.com/mojomast/workflow/blob/main/evidence/rails-rc/release/DECISION.md) separates the qualified source revisions from the open worker-assignment binding and a live Windows canary. `rails_enabled` stays off.
+- **M2 canary: one RETURN accepted.** The backlog marks `M2-CANARY-RUN` `landed` on the accepted canary RETURN (digest `0515b019`) and the attributed re-dispatch, with an acceptance report for AC-001 to AC-005 and a signed reviewer attestation ([Workflow #94](https://github.com/mojomast/workflow/pull/94)). **Whether it ran on the native Windows worker is unconfirmed:** the backlog note calls it a Windows canary, but no committed record names the worker host or its platform, and the [Windows canary assessment](https://github.com/mojomast/workflow/blob/main/evidence/rails-rc/windows-canary.md) written earlier the same day records the native Windows run as blocked before live preflight.
+- **Also on `main` since 17 November:** risk tiers enforced at dispatch ([BundleBees #247](https://github.com/mojomast/bundlebees/pull/247)), slop-lint as a blocking ratchet in Workflow, Hyvv, BundleBees and Orbit, the memory vault service with `MEMORY_ENABLED` still off ([Workflow #98](https://github.com/mojomast/workflow/pull/98)), the live observability snapshot for Hermes chat cards ([orbit-control-plane #4](https://github.com/mojomast/orbit-control-plane/pull/4)), [uirizz v0.1.0](https://github.com/mojomast/uirizz/releases/tag/v0.1.0) and the [code map](codemap/README.md). The day-by-day record is in [NEWS.md](NEWS.md).
 - **For maintainers:** [NEWS.md](NEWS.md) keeps the dated operational history. The [coordinator playbook](https://github.com/mojomast/workflow/blob/main/docs/19-coordinator-playbook.md) explains authorization, review, and the human decisions required for merge, release, and deployment.
