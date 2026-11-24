@@ -3,7 +3,7 @@
  "generator_version":"1.0.0",
  "name":"bundlebees",
  "url":"https://github.com/mojomast/bundlebees",
- "sha":"390a4e6ea15c36f99d0f7e430376866b19fb3d33",
+ "sha":"82b911820c70ebfa1c9c20b9dc6eb9f1633cd9bb",
  "layer":3,
  "role":"Coordinator Hermes plugin: briefs, leases, dispatch, risk tiers, sandboxed verify, integrate",
  "stats":{"files":403,"code_files":327,"symbols":3663,"test_symbols":3473,"import_edges":782,"lines_by_lang":{"python":152245,"markdown":7946,"json":1383,"js":869,"yaml":507,"html":365,"shell":248,"toml":39}},
