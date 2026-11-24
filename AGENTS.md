@@ -20,6 +20,8 @@ python3 scripts/codemap/build.py --check        # CI: regenerate + diff + verify
 python3 scripts/codemap/build.py --verify-docs  # every repo/path in narrative exists; budgets met
 python3 scripts/codemap/build.py --upstream     # which pins are behind main
 python3 scripts/codemap/build.py --budgets      # token cost of each layer
+python3 scripts/codemap/build.py --slice repo/path [--max-tokens N]  # task cut of the map
+python3 scripts/codemap/build.py --impact repo/path ...              # importers + matching tests (JSON)
 python3 -m unittest discover -s scripts/codemap -p 'test_*.py'
 ```
 
