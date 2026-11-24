@@ -27,8 +27,9 @@ class ReleasingDocTests(unittest.TestCase):
 
     def test_immutable_release_order(self):
         t = self.text().lower()
-        self.assertIn("immutable", t)
-        draft, attach, publish = (t.index(w) for w in ("draft", "attach", "publish"))
+        self.assertIn("## immutable releases", t)
+        t = t[t.index("## immutable releases"):]
+        draft, attach, publish = (t.index(w) for w in ("**draft**", "**attach**", "**publish**"))
         self.assertLess(draft, attach)
         self.assertLess(attach, publish)
 

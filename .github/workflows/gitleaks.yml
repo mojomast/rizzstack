@@ -46,6 +46,14 @@ jobs:
           persist-credentials: false
       - name: Workflow contract tests
         run: python3 -m unittest discover -s tests -v
+      - name: COMPAT.md is generated from compat/tuple.json
+        run: python3 scripts/compat.py check
+      - name: COMPAT pins match bundlebees pins.py at its released tag
+        run: |
+          set -euo pipefail
+          tag="$(python3 -c "import json; print(json.load(open('compat/tuple.json'))['bundlebees_pins']['tag'])")"
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/mojomast/bundlebees/${tag}/bundlebees_plugin/pins.py" -o "$RUNNER_TEMP/pins.py"
+          python3 scripts/compat.py check-pins "$RUNNER_TEMP/pins.py"
 
   ci-gate:
     name: ci-gate
