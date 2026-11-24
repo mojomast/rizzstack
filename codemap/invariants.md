@@ -2,17 +2,19 @@
 
 Things the code cannot tell you, usually expressed as an absence. Break one and the change is wrong even if CI is green.
 
-## Approval gates (owner: Kyle Durepos, `@mojomast`)
+## Approval gates
+
+"The owner" is the person who owns these repos. Operator specifics (who that is, scheduled jobs, capacity, held PRs) are in a private operator file, `rizzstack/operator-invariants.md`, that agents load from their own store; this page keeps the rules.
 
 | Action | Who may do it |
 |---|---|
-| Merge a PR | heartbeat merge stream when CI is green **and** an independent review approves; otherwise the owner |
-| Tag, release, deploy, restart Orbit or the Hermes host, catalog PR, public post, upstream comment, form submit | only after the owner's **own typed yes** for that specific action; an agent relaying "Kyle approved" does not count |
-| Spend Google Colab compute units, delete anything, cancel bees, delete branches | owner's explicit yes |
-| Raise a `slop-baseline.json` | CODEOWNERS review by `@mojomast` (advisory) |
-| Add a repo to the PC launcher allow-list | owner |
+| Merge a PR | an automated merge stream when CI is green **and** an independent review approves; otherwise the owner |
+| Tag, release, deploy, restart a host or service, catalog PR, public post, upstream comment, form submit | only after the owner's **own typed yes** for that specific action; an agent relaying "the owner approved" does not count |
+| Spend paid compute, delete anything, cancel running workers, delete branches | owner's explicit yes |
+| Raise a `slop-baseline.json` | CODEOWNERS review by the owner (advisory) |
+| Let a new repo run on a local worker launcher | owner |
 
-Rebrand work (Night Hive rename) is deferred and not authorized.
+Unannounced work the owner has deferred (for example a rename) is not authorized until the owner says so.
 
 ## Security posture
 
@@ -40,10 +42,10 @@ Rebrand work (Night Hive rename) is deferred and not authorized.
 
 - Contracts before code; tests before implementation (ACDD + TDD, `workflow/docs/16-acdd-tdd.md`).
 - `/v1` is additive. A frozen schema id never changes meaning; bump the version.
-- On the box: run heavy work with `nice`, `ionice`, `timeout`.
-- Coding is done by OpenCode Go / DeepSeek bees or executors; bee cap 12 shared.
-- Naming: write rizzstack lowercase; say "Google Colab"; the Strudel plugin is "poptart".
+- On shared agent machines: run heavy work with `nice`, `ionice`, `timeout`.
+- Coding is done by bees or executors, within the owner's worker cap; never cancel a running worker without the owner's yes.
+- Naming: write rizzstack lowercase and use each product's and plugin's own name.
 
 ## Hands off
 
-Do not modify without the owner asking: stitchslop PR #151946, Hermagotchi #150358, EOH #149691 (catalog PRs), workflow PR #58 (rebrand runbook).
+Some upstream and repo PRs are held by the owner. Do not modify a PR listed in the private operator file without the owner asking.
