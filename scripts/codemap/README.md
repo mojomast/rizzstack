@@ -6,6 +6,7 @@ Stdlib-only generator for the machine-made layer of the rizzstack code map. Pyth
 |---|---|
 | `sources.json` | repos, full pinned SHAs, layer, role, excluded globs |
 | `build.py` | fetch pins (shallow, blob-filtered), index, render, check |
+| `slice.py` | read-only task cut (`slice_map`) and reverse-impact (`impact`) helpers |
 | `test_build.py` | unit tests (`python3 -m unittest discover -s scripts/codemap -p 'test_*.py'`) |
 
 ## What it extracts per repo
@@ -32,6 +33,10 @@ python3 scripts/codemap/build.py --check        # regenerate to temp, diff, then
 python3 scripts/codemap/build.py --verify-docs  # narrative repo/path refs + scrub patterns + token budgets
 python3 scripts/codemap/build.py --upstream [--strict]   # pinned vs upstream HEAD
 python3 scripts/codemap/build.py --budgets      # token estimate (chars/4) per layer
+python3 scripts/codemap/build.py --slice repo/path ... [--max-tokens N]  # attributed rows/bullets that mention the paths
+python3 scripts/codemap/build.py --impact repo/path ...  # JSON: importers (depth 2), matching tests, complete:false
 ```
+
+`--slice` always keeps the security and secrets invariants and trims pages by priority (gaps → ci-gates → change-recipes → contracts → README → L1). `--impact` reads `codemap/generated/<repo>.json` only; edges are a lower bound, so still run the full suite. Neither mode clones, fetches or writes.
 
 Bumping a pin: edit `sha` (full 40 chars) in `sources.json`, regenerate, run `--verify-docs`, fix moved paths in the hand-written pages, commit both.

@@ -19,6 +19,8 @@ Usage:
   python3 scripts/codemap/build.py --verify-docs   # path + budget checks only (no network)
   python3 scripts/codemap/build.py --upstream      # report pinned SHA vs upstream main
   python3 scripts/codemap/build.py --src workflow=/path/to/checkout ...  # reuse checkouts
+  python3 scripts/codemap/build.py --slice repo/path [--max-tokens N]  # task cut of the map
+  python3 scripts/codemap/build.py --impact repo/path ...              # importers + tests (JSON)
 """
 from __future__ import annotations
 
@@ -899,10 +901,21 @@ def main() -> int:
     ap.add_argument("--upstream", action="store_true", help="compare pinned SHAs with upstream default branches")
     ap.add_argument("--strict", action="store_true", help="with --upstream: exit 3 when any pin is stale")
     ap.add_argument("--budgets", action="store_true", help="print token estimates for every map layer")
+    ap.add_argument("--slice", nargs="+", metavar="PATH", help="print the map rows/bullets that mention these repo-prefixed paths")
+    ap.add_argument("--impact", nargs="+", metavar="PATH", help="print importers (depth 2) and matching test files as JSON")
+    ap.add_argument("--max-tokens", type=int, default=1500, help="with --slice: token budget for the output (default 1500)")
     ap.add_argument("--workdir", default=os.environ.get("CODEMAP_WORKDIR", str(Path(tempfile.gettempdir()) / "rizzstack-codemap-src")))
     ap.add_argument("--src", action="append", default=[], metavar="NAME=PATH", help="reuse an existing checkout at the pinned SHA")
     a = ap.parse_args()
     overrides = dict(s.split("=", 1) for s in a.src)
+    if a.slice:
+        import slice as slice_mod
+        print(slice_mod.slice_map(a.slice, a.max_tokens))
+        return 0
+    if a.impact:
+        import slice as slice_mod
+        print(json.dumps(slice_mod.impact(a.impact)))
+        return 0
     if a.upstream:
         n = upstream()
         print(f"{n} stale pin(s)" if n else "all pins current")
