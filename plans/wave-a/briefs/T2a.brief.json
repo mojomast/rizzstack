@@ -1,0 +1,59 @@
+{
+  "objective": "service.context(id) names the guide path and does not inline the guide text; context.parts keeps the guide for callers that need it. Regenerate hermes-plugin/orbit-source.tar.gz.",
+  "project": "orbitdesktop",
+  "branch": "feat/wave-a-t2a",
+  "source_rev": "ab6bd5dd3c710af312ccb5a806449cd5c79e8b2e",
+  "assigned_files": [
+    "server/workspace.mjs",
+    "hermes-plugin/orbit-source.tar.gz"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "Workspace context names the guide path instead of inlining it",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "node --test tests/workspace-guide-by-path.test.mjs"
+    ],
+    "tests": [
+      "tests/workspace-guide-by-path.test.mjs"
+    ]
+  },
+  "tests": [
+    "tests/workspace-guide-by-path.test.mjs"
+  ],
+  "commands": [
+    "node --test tests/workspace-guide-by-path.test.mjs"
+  ],
+  "budget": {
+    "timeout_s": 1800,
+    "max_tool_calls": 60
+  },
+  "risk": {
+    "tier": "medium",
+    "reasons": [
+      "token waste per turn"
+    ]
+  },
+  "deps": [],
+  "failing_output": "not ok 1 - the Hermes context names the guide by path and does not inline it\nnot ok 2 - the operator block stays first and complete\n# pass 1\n# fail 2",
+  "affected_tests": [
+    "tests/agent-pane-ux.browser.py",
+    "tests/agent-selection.browser.py",
+    "tests/agent-store.test.mjs",
+    "tests/agent-submission-recovery.test.mjs",
+    "tests/asteria-simulator.browser.py",
+    "tests/browser-agent-guide-live.py",
+    "tests/browser-appearance-checkpoint-live.py",
+    "tests/browser-appearance-live.py",
+    "tests/browser-checkpoints-live.py",
+    "tests/browser-hermes-tools-live.py",
+    "tests/browser-layout-customization-live.py",
+    "tests/browser-plugins-live.py",
+    "tests/browser-style-live.py",
+    "tests/browser-workspace-live.py",
+    "tests/browser_workspace.py"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "objective": "catalog=true returns sorted operation names, version and limits (no $defs, under 4000 chars); catalog_operation returns one operation plus only its referenced $defs; unknown operation is 400; the Hermes plugin accepts catalog_operation. Regenerate the tarball.",
+  "project": "orbitdesktop",
+  "branch": "feat/wave-a-t2b",
+  "source_rev": "09fded1b0d37101055a1b8dcf3f55ecc2c7b2a99",
+  "assigned_files": [
+    "server/workspace-description.mjs",
+    "server/workspace.mjs",
+    "hermes-plugin/__init__.py",
+    "hermes-plugin/orbit-source.tar.gz"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "describe catalog=true returns an index; one schema on request",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "node --test tests/workspace-catalog-index.test.mjs tests/workspace-description.test.mjs tests/hermes-plugin.test.mjs"
+    ],
+    "tests": [
+      "tests/hermes-plugin.test.mjs",
+      "tests/workspace-catalog-index.test.mjs",
+      "tests/workspace-description.test.mjs"
+    ]
+  },
+  "tests": [
+    "tests/hermes-plugin.test.mjs",
+    "tests/workspace-catalog-index.test.mjs",
+    "tests/workspace-description.test.mjs"
+  ],
+  "commands": [
+    "node --test tests/workspace-catalog-index.test.mjs tests/workspace-description.test.mjs tests/hermes-plugin.test.mjs"
+  ],
+  "budget": {
+    "timeout_s": 1800,
+    "max_tool_calls": 60
+  },
+  "risk": {
+    "tier": "medium",
+    "reasons": [
+      "~10k-token catalog per call"
+    ]
+  },
+  "deps": [
+    "T2a"
+  ],
+  "failing_output": "not ok 1 - Hermes plugin uses real Orbit API: preview, apply, conflict, checkpoint, restore\nnot ok 2 - catalog=true is an index of operation names\nnot ok 3 - catalog_operation returns one schema and only the $defs it references\nnot ok 5 - description is authenticated, bounded layout metadata with contract-derived catalog and real bindings only\n# pass 1\n# fail 4",
+  "affected_tests": [
+    "tests/agent-pane-ux.browser.py",
+    "tests/agent-selection.browser.py",
+    "tests/agent-store.test.mjs",
+    "tests/agent-submission-recovery.test.mjs",
+    "tests/asteria-simulator.browser.py",
+    "tests/browser-agent-guide-live.py",
+    "tests/browser-appearance-checkpoint-live.py",
+    "tests/browser-appearance-live.py",
+    "tests/browser-checkpoints-live.py",
+    "tests/browser-hermes-tools-live.py",
+    "tests/browser-layout-customization-live.py",
+    "tests/browser-plugins-live.py",
+    "tests/browser-style-live.py",
+    "tests/browser-workspace-live.py",
+    "tests/browser_workspace.py"
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "contract_version": "acdd/1",
+  "id": "wave-a-T5b",
+  "title": "Approval notice shows once, then a short reminder",
+  "outcome": {
+    "summary": "The full approval notice is injected once per scope, then a reminder under 300 chars; yes after the reminder still approves; tools stay blocked until approval; the cards hint repeats only when the cards change.",
+    "observable_behavior": [
+      "Approval notice shows once, then a short reminder"
+    ]
+  },
+  "interfaces": [
+    {
+      "name": "pre_llm_call context",
+      "kind": "function",
+      "change": "modify"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "cards hint repeats only when cards change",
+      "verification": "test",
+      "tests": [
+        "tests/test_notices_once.py::test_cards_hint_repeats_only_when_cards_change"
+      ]
+    },
+    {
+      "id": "AC-002",
+      "statement": "full notice once then a short reminder",
+      "verification": "test",
+      "tests": [
+        "tests/test_notices_once.py::test_full_notice_once_then_a_short_reminder"
+      ]
+    },
+    {
+      "id": "AC-003",
+      "statement": "tools stay blocked while only the reminder shows",
+      "verification": "test",
+      "tests": [
+        "tests/test_notices_once.py::test_tools_stay_blocked_while_only_the_reminder_shows"
+      ],
+      "regression": true
+    },
+    {
+      "id": "AC-004",
+      "statement": "yes after a reminder still approves",
+      "verification": "test",
+      "tests": [
+        "tests/test_notices_once.py::test_yes_after_a_reminder_still_approves"
+      ],
+      "regression": true
+    }
+  ],
+  "dependencies": [],
+  "scope": {
+    "assigned_files": [
+      "uirizz_plugin/gate.py",
+      "uirizz_plugin/hints.py",
+      "uirizz_plugin/hooks.py"
+    ],
+    "test_files": [
+      "tests/test_notices_once.py"
+    ],
+    "prohibited": [
+      ".github/workflows/**",
+      "CHANGELOG.md"
+    ]
+  },
+  "source_rev": "70dd2fa301bd123f8d1b2ea6f8c8eb39065c78c2",
+  "tdd": {
+    "applicable": true,
+    "test_first": true
+  },
+  "verification": {
+    "independent": true,
+    "commands": [
+      "python -m pytest -q tests/test_notices_once.py"
+    ]
+  },
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "deploy",
+      "restart",
+      "tag",
+      "branch deletion",
+      "live canary"
+    ]
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "approval-gate code: raised above the medium floor by the coordinator"
+    ]
+  },
+  "review": {
+    "status": "approved",
+    "approved_by": "Kyle Durepos (chat t1650u, t1651u)",
+    "approved_at": "2026-11-24T17:18:01Z",
+    "contract_sha256": "b14159073a0fa553a509c7319bf7b28e013002c3c304ffb656fb3ffe3e600d1d",
+    "test_collection": {
+      "manifest_sha256": "f653d6636305e132e5a4751e6d16ee887daf2f153961d78ac52901094d67e9ee",
+      "source_rev": "70dd2fa301bd123f8d1b2ea6f8c8eb39065c78c2",
+      "collected": 4
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "objective": "_backoff keeps run_id and sandbox; a same-model retry resumes through backend.resume(a, prompt) with a short continue prompt when the backend supports it (a model switch restarts fresh); cleanup is keyed by sandbox so the retry sandbox is torn down exactly once.",
+  "project": "hyvv",
+  "branch": "feat/wave-a-hy-2",
+  "source_rev": "1c6001d335faa9f440413fab6c3edbb95494cc99",
+  "assigned_files": [
+    "launcher.py"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "Retries resume the same run and every sandbox is torn down once",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "python -m pytest -q tests/test_retry_resume_and_teardown.py"
+    ],
+    "tests": [
+      "tests/test_retry_resume_and_teardown.py"
+    ]
+  },
+  "tests": [
+    "tests/test_retry_resume_and_teardown.py"
+  ],
+  "commands": [
+    "python -m pytest -q tests/test_retry_resume_and_teardown.py"
+  ],
+  "budget": {
+    "timeout_s": 1800,
+    "max_tool_calls": 60
+  },
+  "risk": {
+    "tier": "medium",
+    "reasons": [
+      "token waste on retry (Fix-now #3)",
+      "sandbox leak (Fix-now #4)"
+    ]
+  },
+  "deps": [
+    "HY-1"
+  ],
+  "failing_output": "FAILED tests/test_retry_resume_and_teardown.py::TeardownAcrossRetry::test_both_sandboxes_are_torn_down_once_after_a_restart_retry\nFAILED tests/test_retry_resume_and_teardown.py::TeardownAcrossRetry::test_cleanup_once_is_keyed_by_sandbox\nFAILED tests/test_retry_resume_and_teardown.py::ResumeAfterRateLimit::test_same_model_rate_limit_resumes_the_same_sandbox\n3 failed, 1 passed in 1.48s",
+  "affected_tests": [
+    "tests/test_acceptance_class.py",
+    "tests/test_agy_cua.py",
+    "tests/test_assigned_scope.py",
+    "tests/test_bee_landed_usage.py",
+    "tests/test_budget_enforcement.py",
+    "tests/test_bundlebees_api.py",
+    "tests/test_config_routing.py",
+    "tests/test_deepseek_models.py",
+    "tests/test_deployment_receipt.py",
+    "tests/test_dropout_fixes.py",
+    "tests/test_export_and_scripts.py",
+    "tests/test_export_project.py",
+    "tests/test_health_models.py",
+    "tests/test_install_artifacts.py",
+    "tests/test_landing_events.py"
+  ]
+}

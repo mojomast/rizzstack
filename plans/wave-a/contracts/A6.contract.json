@@ -1,0 +1,116 @@
+{
+  "contract_version": "acdd/1",
+  "id": "wave-a-A6",
+  "title": "Lease-overlap check fails closed when the launcher list is unreadable",
+  "outcome": {
+    "summary": "In tools.py work_create, refuse with launcher_unreadable (no create call) when the launcher attempts listing raises or is not a list, instead of skipping the overlap check.",
+    "observable_behavior": [
+      "Lease-overlap check fails closed when the launcher list is unreadable"
+    ]
+  },
+  "interfaces": [
+    {
+      "name": "bundlebees_work_create",
+      "kind": "function",
+      "change": "modify"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "readable empty attempts still dispatch",
+      "verification": "test",
+      "tests": [
+        "tests/test_lease_check_fail_closed.py::test_readable_empty_attempts_still_dispatch"
+      ],
+      "regression": true
+    },
+    {
+      "id": "AC-002",
+      "statement": "unreadable attempts refuse dispatch[ListUnreadable]",
+      "verification": "test",
+      "tests": [
+        "tests/test_lease_check_fail_closed.py::test_unreadable_attempts_refuse_dispatch[ListUnreadable]"
+      ]
+    },
+    {
+      "id": "AC-003",
+      "statement": "unreadable attempts refuse dispatch[NotAList]",
+      "verification": "test",
+      "tests": [
+        "tests/test_lease_check_fail_closed.py::test_unreadable_attempts_refuse_dispatch[NotAList]"
+      ]
+    },
+    {
+      "id": "AC-004",
+      "statement": "unreadable attempts refuse dispatch[RawUnreadable]",
+      "verification": "test",
+      "tests": [
+        "tests/test_lease_check_fail_closed.py::test_unreadable_attempts_refuse_dispatch[RawUnreadable]"
+      ]
+    }
+  ],
+  "dependencies": [],
+  "scope": {
+    "assigned_files": [
+      "bundlebees_plugin/tools.py"
+    ],
+    "test_files": [
+      "tests/test_lease_check_fail_closed.py"
+    ],
+    "prohibited": [
+      ".github/workflows/**",
+      "CHANGELOG.md"
+    ]
+  },
+  "source_rev": "224a954f6a5de4a5418ac0156052a937c2eb9227",
+  "tdd": {
+    "applicable": true,
+    "test_first": true
+  },
+  "verification": {
+    "independent": true,
+    "commands": [
+      "python -m pytest -q tests/test_lease_check_fail_closed.py"
+    ]
+  },
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "deploy",
+      "restart",
+      "tag",
+      "branch deletion",
+      "live canary"
+    ]
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "dispatch safety gate (review Fix-now #6)"
+    ]
+  },
+  "review": {
+    "status": "approved",
+    "approved_by": "Kyle Durepos (chat t1650u, t1651u)",
+    "approved_at": "2026-11-24T17:16:35Z",
+    "contract_sha256": "acad09f3d3dc442efbe5c7676b2092f98b370a92dd144a2f67c5285744e60572",
+    "test_collection": {
+      "manifest_sha256": "c8649f741cb5a4d72dfe8d0bdbb66132617f7787caf5eaae92ead0a1c83202fa",
+      "source_rev": "224a954f6a5de4a5418ac0156052a937c2eb9227",
+      "collected": 4
+    }
+  }
+}
