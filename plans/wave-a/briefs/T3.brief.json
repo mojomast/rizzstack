@@ -1,0 +1,45 @@
+{
+  "objective": "AGENTS.md at most 1500 bytes, keeps npm run check and scripts/bundle_hermes.py, and points at docs only conditionally. Regenerate the tarball if AGENTS.md is bundled.",
+  "project": "orbitdesktop",
+  "branch": "feat/wave-a-t3",
+  "source_rev": "ede1de2c88879011e16fd29eb5fdb9484b434584",
+  "assigned_files": [
+    "AGENTS.md",
+    "hermes-plugin/orbit-source.tar.gz"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "AGENTS.md is a short router",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "node --test tests/agents-router.test.mjs"
+    ],
+    "tests": [
+      "tests/agents-router.test.mjs"
+    ]
+  },
+  "tests": [
+    "tests/agents-router.test.mjs"
+  ],
+  "commands": [
+    "node --test tests/agents-router.test.mjs"
+  ],
+  "budget": {
+    "timeout_s": 1800,
+    "max_tool_calls": 60
+  },
+  "risk": {
+    "tier": "medium",
+    "reasons": [
+      "AGENTS.md is docs, but the regenerated tarball puts the floor at medium (first preflight refused low: risk_tier_below_floor)"
+    ]
+  },
+  "deps": [
+    "T2b"
+  ],
+  "failing_output": "not ok 1 - AGENTS.md is short\nnot ok 3 - long docs are named only conditionally\nnot ok 4 - no blanket read-before-anything instruction\n# pass 1\n# fail 3",
+  "affected_tests": []
+}

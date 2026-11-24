@@ -1,0 +1,266 @@
+{
+  "contract_version": "acdd/1",
+  "id": "wave-a-A1a",
+  "title": "Verify refuses patches that can subvert the approved test run",
+  "outcome": {
+    "summary": "Add bundlebees_plugin/subversion_scan.py (scan_patch -> findings with kind/path/line for conftest, startup hooks, .pth files, pytest plugins, forced exit, atexit, pytest hooks, patched assertions) and call it from verify_local before the sandboxed test run; any finding refuses with VerifyError code test_subversion.",
+    "observable_behavior": [
+      "Verify refuses patches that can subvert the approved test run"
+    ]
+  },
+  "interfaces": [
+    {
+      "name": "bundlebees_plugin.subversion_scan.scan_patch",
+      "kind": "function",
+      "change": "add"
+    },
+    {
+      "name": "bundlebees_plugin.verify_local.check_patch_subversion",
+      "kind": "function",
+      "change": "add"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "added conftest is a finding[conftest.py]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_added_conftest_is_a_finding[conftest.py]"
+      ]
+    },
+    {
+      "id": "AC-002",
+      "statement": "added conftest is a finding[src/pkg/conftest.py]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_added_conftest_is_a_finding[src/pkg/conftest.py]"
+      ]
+    },
+    {
+      "id": "AC-003",
+      "statement": "added conftest is a finding[tests/conftest.py]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_added_conftest_is_a_finding[tests/conftest.py]"
+      ]
+    },
+    {
+      "id": "AC-004",
+      "statement": "benign patch has no findings",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_benign_patch_has_no_findings"
+      ]
+    },
+    {
+      "id": "AC-005",
+      "statement": "findings name the path and line without echoing secrets",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_findings_name_the_path_and_line_without_echoing_secrets"
+      ]
+    },
+    {
+      "id": "AC-006",
+      "statement": "interpreter startup hooks are findings[sitecustomize.py]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_interpreter_startup_hooks_are_findings[sitecustomize.py]"
+      ]
+    },
+    {
+      "id": "AC-007",
+      "statement": "interpreter startup hooks are findings[src/usercustomize.py]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_interpreter_startup_hooks_are_findings[src/usercustomize.py]"
+      ]
+    },
+    {
+      "id": "AC-008",
+      "statement": "pth file is a finding",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pth_file_is_a_finding"
+      ]
+    },
+    {
+      "id": "AC-009",
+      "statement": "pytest plugin loading is a finding[pyproject.toml-addopts = \"-p myplugin\"]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pytest_plugin_loading_is_a_finding[pyproject.toml-addopts = \"-p myplugin\"]"
+      ]
+    },
+    {
+      "id": "AC-010",
+      "statement": "pytest plugin loading is a finding[pytest.ini-addopts = -p no:cacheprovider -p myplugin]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pytest_plugin_loading_is_a_finding[pytest.ini-addopts = -p no:cacheprovider -p myplugin]"
+      ]
+    },
+    {
+      "id": "AC-011",
+      "statement": "pytest plugin loading is a finding[setup.cfg-addopts = -p myplugin]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pytest_plugin_loading_is_a_finding[setup.cfg-addopts = -p myplugin]"
+      ]
+    },
+    {
+      "id": "AC-012",
+      "statement": "pytest plugin loading is a finding[src/pkg/  init  .py-pytest plugins = [\"pkg.hooks\"]]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pytest_plugin_loading_is_a_finding[src/pkg/__init__.py-pytest_plugins = [\"pkg.hooks\"]]"
+      ]
+    },
+    {
+      "id": "AC-013",
+      "statement": "pytest plugin loading is a finding[tox.ini-addopts = -p myplugin]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_pytest_plugin_loading_is_a_finding[tox.ini-addopts = -p myplugin]"
+      ]
+    },
+    {
+      "id": "AC-014",
+      "statement": "removed lines are not findings",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_removed_lines_are_not_findings"
+      ]
+    },
+    {
+      "id": "AC-015",
+      "statement": "runner subversion in added lines is a finding[    os. exit(0)-forced exit]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[    os._exit(0)-forced_exit]"
+      ]
+    },
+    {
+      "id": "AC-016",
+      "statement": "runner subversion in added lines is a finding[atexit.register( rewrite)-atexit]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[atexit.register(_rewrite)-atexit]"
+      ]
+    },
+    {
+      "id": "AC-017",
+      "statement": "runner subversion in added lines is a finding[builtins.AssertionError = type('A', (Exception,), {})-patched assertion]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[builtins.AssertionError = type('A', (Exception,), {})-patched_assertion]"
+      ]
+    },
+    {
+      "id": "AC-018",
+      "statement": "runner subversion in added lines is a finding[def pytest collection modifyitems(items):-pytest hook]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[def pytest_collection_modifyitems(items):-pytest_hook]"
+      ]
+    },
+    {
+      "id": "AC-019",
+      "statement": "runner subversion in added lines is a finding[def pytest runtest makereport(item, call):-pytest hook]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[def pytest_runtest_makereport(item, call):-pytest_hook]"
+      ]
+    },
+    {
+      "id": "AC-020",
+      "statement": "runner subversion in added lines is a finding[unittest.TestCase.assertEqual = lambda *a, **k: None-patched assertion]",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_runner_subversion_in_added_lines_is_a_finding[unittest.TestCase.assertEqual = lambda *a, **k: None-patched_assertion]"
+      ]
+    },
+    {
+      "id": "AC-021",
+      "statement": "verify accepts a clean patch",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_verify_accepts_a_clean_patch"
+      ]
+    },
+    {
+      "id": "AC-022",
+      "statement": "verify refuses a patch with findings",
+      "verification": "test",
+      "tests": [
+        "tests/test_subversion_scan.py::test_verify_refuses_a_patch_with_findings"
+      ]
+    }
+  ],
+  "dependencies": [],
+  "scope": {
+    "assigned_files": [
+      "bundlebees_plugin/subversion_scan.py",
+      "bundlebees_plugin/verify_local.py"
+    ],
+    "test_files": [
+      "tests/test_subversion_scan.py"
+    ],
+    "prohibited": [
+      ".github/workflows/**",
+      "CHANGELOG.md"
+    ]
+  },
+  "source_rev": "46e03db6b5c7f0aa430ba31334a00b187a4df90a",
+  "tdd": {
+    "applicable": true,
+    "test_first": true
+  },
+  "verification": {
+    "independent": true,
+    "commands": [
+      "python -m pytest -q tests/test_subversion_scan.py"
+    ]
+  },
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "deploy",
+      "restart",
+      "tag",
+      "branch deletion",
+      "live canary"
+    ]
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "verify_local.py is a sensitive module",
+      "closes review Fix-now #1 (junit/collection trust)"
+    ]
+  },
+  "review": {
+    "status": "approved",
+    "approved_by": "rizzstack plan coordinator (draft; pending Kyle)",
+    "approved_at": "2026-11-24T16:51:56Z",
+    "contract_sha256": "5495710cbf411db297c31d303c4448562fbf5cd258442c7cd34490655237e2af",
+    "test_collection": {
+      "manifest_sha256": "0474831c6a2bfd2c22ae2f32aba33a1b50cd473a7cb86baf5ddb22f6d5e28828",
+      "source_rev": "46e03db6b5c7f0aa430ba31334a00b187a4df90a",
+      "collected": 22
+    }
+  }
+}

@@ -1,0 +1,167 @@
+{
+  "objective": "auth.SESSION_TTL_MS (12h) with server-side expiry; sessions carry a role; a new operator token and an operators identity allowlist; the 8 control routes return 403 for viewer and orbit and 202 for operator.",
+  "project": "orbit-control-plane",
+  "branch": "feat/wave-a-a9",
+  "source_rev": "98d6c0a2848596c2063bc4607baff596f1dd7b8b",
+  "assigned_files": [
+    "src/auth.mjs",
+    "src/server.mjs",
+    "src/config.mjs",
+    "README.md"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "Control routes need the operator role; sessions expire server-side",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "node --test tests/operator-role.test.mjs tests/api.test.mjs tests/e2e-smoke.test.mjs tests/intents.test.mjs"
+    ],
+    "tests": [
+      "tests/api.test.mjs",
+      "tests/e2e-smoke.test.mjs",
+      "tests/helpers.mjs",
+      "tests/intents.test.mjs",
+      "tests/operator-role.test.mjs"
+    ]
+  },
+  "tests": [
+    "tests/api.test.mjs",
+    "tests/e2e-smoke.test.mjs",
+    "tests/helpers.mjs",
+    "tests/intents.test.mjs",
+    "tests/operator-role.test.mjs"
+  ],
+  "commands": [
+    "node --test tests/operator-role.test.mjs tests/api.test.mjs tests/e2e-smoke.test.mjs tests/intents.test.mjs"
+  ],
+  "budget": {
+    "timeout_s": 2700,
+    "max_tool_calls": 90
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "auth path (high floor)",
+      "needs a new operator credential before deploy"
+    ]
+  },
+  "deps": [],
+  "contract": {
+    "contract_version": "acdd/1",
+    "id": "wave-a-A9",
+    "title": "Control routes need the operator role; sessions expire server-side",
+    "outcome": {
+      "summary": "auth.SESSION_TTL_MS (12h) with server-side expiry; sessions carry a role; a new operator token and an operators identity allowlist; the 8 control routes return 403 for viewer and orbit and 202 for operator.",
+      "observable_behavior": [
+        "Control routes need the operator role; sessions expire server-side"
+      ]
+    },
+    "interfaces": [
+      {
+        "name": "src/auth.mjs createSessions",
+        "kind": "function",
+        "change": "modify"
+      },
+      {
+        "name": "control routes",
+        "kind": "http",
+        "change": "modify"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "statement": "tests/operator-role.test.mjs passes under node --test (verification runs in CI; bundlebees verify is pytest-only)",
+        "verification": "integration"
+      },
+      {
+        "id": "AC-002",
+        "statement": "tests/api.test.mjs passes under node --test (verification runs in CI; bundlebees verify is pytest-only)",
+        "verification": "integration"
+      },
+      {
+        "id": "AC-003",
+        "statement": "tests/e2e-smoke.test.mjs passes under node --test (verification runs in CI; bundlebees verify is pytest-only)",
+        "verification": "integration"
+      },
+      {
+        "id": "AC-004",
+        "statement": "tests/intents.test.mjs passes under node --test (verification runs in CI; bundlebees verify is pytest-only)",
+        "verification": "integration"
+      }
+    ],
+    "dependencies": [],
+    "scope": {
+      "assigned_files": [
+        "src/auth.mjs",
+        "src/server.mjs",
+        "src/config.mjs",
+        "README.md"
+      ],
+      "test_files": [
+        "tests/api.test.mjs",
+        "tests/e2e-smoke.test.mjs",
+        "tests/helpers.mjs",
+        "tests/intents.test.mjs",
+        "tests/operator-role.test.mjs"
+      ],
+      "prohibited": [
+        ".github/workflows/**",
+        "CHANGELOG.md"
+      ]
+    },
+    "source_rev": "98d6c0a2848596c2063bc4607baff596f1dd7b8b",
+    "tdd": {
+      "applicable": false,
+      "reason": "node:test suite; bundlebees TDD collection is pytest-only. RED was recorded by hand on the RED commit.",
+      "test_first": true
+    },
+    "verification": {
+      "independent": true,
+      "commands": [
+        "node --test tests/operator-role.test.mjs tests/api.test.mjs tests/e2e-smoke.test.mjs tests/intents.test.mjs"
+      ]
+    },
+    "evidence_required": [
+      "integration",
+      "review"
+    ],
+    "authorization": {
+      "human_gates": [
+        "merge",
+        "tag",
+        "release",
+        "deploy",
+        "publish"
+      ],
+      "not_authorized": [
+        "merge",
+        "deploy",
+        "restart",
+        "tag",
+        "branch deletion",
+        "live canary"
+      ]
+    },
+    "risk": {
+      "tier": "high",
+      "reasons": [
+        "auth path (high floor)",
+        "needs a new operator credential before deploy"
+      ]
+    },
+    "review": {
+      "status": "approved",
+      "approved_by": "rizzstack plan coordinator (draft; pending Kyle)",
+      "approved_at": "2026-11-24T16:51:58Z",
+      "contract_sha256": "707f55e3a0b68cfa34e00a0f363a86b78437246ee880bac395b3f8a33514f5d0"
+    }
+  },
+  "failing_output": "not ok 1 - session ttl matches the cookie and is exported\nnot ok 2 - sessions expire server-side\nnot ok 3 - default sessions use the 12 h ttl\nnot ok 4 - an operator token is classified as operator\nnot ok 5 - viewer is refused on /api/v1/control/tasks\nnot ok 6 - viewer is refused on /api/v1/control/tasks/t1/move\nnot ok 7 - viewer is refused on /api/v1/control/tasks/t1/priority\nnot ok 8 - viewer is refused on /api/v1/control/attempts/att1/cancel\nnot ok 9 - viewer is refused on /api/v1/control/attempts/att1/retry\nnot ok 10 - viewer is refused on /api/v1/control/attempts/att1/review\nnot ok 11 - viewer is refused on /api/v1/control/dispatch\nnot ok 12 - viewer is refused on /api/v1/control/concurrency\nnot ok 13 - orbit bearer is refused on control routes\nnot ok 14 - operator bearer may use control routes\nnot ok 15 - an operator session keeps the operator role; a viewer session does not gain it\nnot ok 17 - identity-header users are operators only when listed\n# pass 1\n# fail 16",
+  "affected_tests": [
+    "tests/auth.test.mjs"
+  ]
+}

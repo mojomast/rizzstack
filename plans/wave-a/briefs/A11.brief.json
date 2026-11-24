@@ -1,0 +1,60 @@
+{
+  "objective": "preflight(brief, state_dir, require_contract=) plus a --require-contract CLI flag; the registered bundlebees preflight command reads the require_contract setting, so preflight and dispatch agree.",
+  "project": "bundlebees",
+  "branch": "feat/wave-a-a11",
+  "source_rev": "67d0807e7b82dfa07d48577456fe74640e10cc57",
+  "assigned_files": [
+    "bundlebees_plugin/preflight.py",
+    "bundlebees_plugin/cli.py"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "Preflight honours require_contract",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "python -m pytest -q tests/test_preflight_require_contract.py"
+    ],
+    "tests": [
+      "tests/test_preflight_require_contract.py"
+    ]
+  },
+  "tests": [
+    "tests/test_preflight_require_contract.py"
+  ],
+  "commands": [
+    "python -m pytest -q tests/test_preflight_require_contract.py"
+  ],
+  "budget": {
+    "timeout_s": 1800,
+    "max_tool_calls": 60
+  },
+  "risk": {
+    "tier": "medium",
+    "reasons": [
+      "preflight/dispatch disagreement (review Fix-now #12)",
+      "path floor is medium for plugin source"
+    ]
+  },
+  "deps": [],
+  "failing_output": "FAILED tests/test_preflight_require_contract.py::test_require_contract_refuses_like_dispatch\nFAILED tests/test_preflight_require_contract.py::test_module_cli_flag - Syste...\nFAILED tests/test_preflight_require_contract.py::test_registered_cli_reads_the_setting",
+  "affected_tests": [
+    "tests/test_board_sync.py",
+    "tests/test_cli.py",
+    "tests/test_cli_attempts_status.py",
+    "tests/test_cli_commit_local.py",
+    "tests/test_cli_literal_output.py",
+    "tests/test_delivery_reconciler.py",
+    "tests/test_execution_settings.py",
+    "tests/test_factory_cli_e2e.py",
+    "tests/test_job_queue_cli.py",
+    "tests/test_metrics_accounting.py",
+    "tests/test_payload_wiring.py",
+    "tests/test_preflight.py",
+    "tests/test_rails_hermes_source.py",
+    "tests/test_rails_registered.py",
+    "tests/test_rails_return.py"
+  ]
+}

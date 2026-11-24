@@ -45,11 +45,11 @@ them. Wave 0 makes every dispatch pass the same gates first. Owner approvals for
 
 | ID | Goal | Where | Status |
 |---|---|---|---|
-| W0-1 | `preflight`: the same gates as `_dispatch`, no launcher call | bundlebees `preflight.py`, `tools.py`, `cli.py`, `docs/risk-tiers.md` | **open PR** [bundlebees #252](https://github.com/mojomast/bundlebees/pull/252) |
+| W0-1 | `preflight`: the same gates as `_dispatch`, no launcher call | bundlebees `preflight.py`, `tools.py`, `cli.py`, `docs/risk-tiers.md` | **merged** [bundlebees #252](https://github.com/mojomast/bundlebees/pull/252) |
 | W0-2 | risk docstrings say what is actually enforced (codemap gaps #4) | bundlebees `risk.py`, `risk_policy.py` | **merged** [bundlebees #251](https://github.com/mojomast/bundlebees/pull/251) |
 | W0-3 | Orbit flags ungated local-worker creates (warn-only by default) | orbitdesktop `server/local-workers-route.mjs` | **merged** [orbitdesktop #88](https://github.com/mojomast/orbitdesktop/pull/88) |
 | W0-4 | `build.py --slice` and `--impact`, so briefs get a mechanical cut of the map | rizzstack `scripts/codemap/` | **merged** [rizzstack #6](https://github.com/mojomast/rizzstack/pull/6) |
-| W0-P | pin workflow and hyvv `main` in bundlebees before the Hermes host update | bundlebees pins | **open PR** [bundlebees #253](https://github.com/mojomast/bundlebees/pull/253) |
+| W0-P | pin workflow and hyvv `main` in bundlebees before the Hermes host update | bundlebees pins | **merged** [bundlebees #253](https://github.com/mojomast/bundlebees/pull/253) |
 | W0-C | the coordinator's dispatch script runs preflight before every dispatch and refuses on failure | coordinator tooling, not in a repo | after W0-1 merges |
 | W0-H | Hermes host to `main` for bundlebees, Orbit, workflow and hyvv, with a backup and rollback first | deploy (owner-gated) | after W0-1 and W0-P merge |
 | W0-L | worker-host launcher workspaces sync from `main`, not old feature branches | launcher config (owner-gated) | approved; not recorded in a repo |
@@ -67,6 +67,26 @@ Five tracks, one PR per track, each checked against `main` before changing anyth
 - **D — CI hygiene:** pinned actions, gitleaks and slop-lint for uirizz; gitleaks for rizzstack; first CI for orbit-control-plane; a check command for vendored slop-lint copies.
 - **E — decisions for the owner:** next milestone, first coordinated release, Rails qualification runs, branch cleanup, the legacy launcher, whether `codemap/invariants.md` stays public, and a balance rule for future waves.
 
+## Next: the next-level review, waves A-F
+
+Source: the [Nov 24 next-level review](https://github.com/mojomast/rizzstack/pull/17)
+(`docs/reviews/2026-11-24-next-level-review.md`). Every finding was re-checked against `main` on
+24 November before it became a slice; dropped and rescoped findings are listed in
+[`plans/wave-a/README.md`](plans/wave-a/README.md). Waves run in this order. Each wave closes on a
+check you can run.
+
+| Wave | Goal | Maps onto the existing plan | Plan |
+|---|---|---|---|
+| A | stop the leaks: Fix-now rows 1-13 and the quick token wins | new; runs before waves 1-4 | 21 slices with RED tests, leases, tiers and preflight: [`plans/wave-a/`](plans/wave-a/README.md). Not in `backlog.json` until the owner approves them. |
+| B | one worker contract: `rizzstack.brief/1`, `rizzstack.attempt/1` | new; finishes the bee-landed id fix started by A12a and HY-3 | [workflow #141](https://github.com/mojomast/workflow/pull/141) |
+| C | gates at the boundary: a signed dispatch ticket | **W3-1, generalized**: the Rails worker-assignment binding becomes one case of the ticket | [hyvv #42](https://github.com/mojomast/hyvv/pull/42) |
+| D | one core, one log: `rizzstack-core`, Rails as the only log, one control loop, unwired code out | **absorbs W4-4** (vendored-copy refresh becomes the core vendoring check) **and W1-7** (the legacy `pc-launcher` is deleted, not marked) | [workflow #142](https://github.com/mojomast/workflow/pull/142) |
+| E | adapters: harness (ACP), model config, OCI sandbox, forge, `bundlebees mcp` | new; W4-1 (token router) feeds its model adapter | [bundlebees #262](https://github.com/mojomast/bundlebees/pull/262) |
+| F | measure and tune: an A/B harness scored by tokens per verified patch | new; **gates W2-G**: memory goes on only after an A/B shows its effect | [workflow #143](https://github.com/mojomast/workflow/pull/143) |
+
+Wave A exit: each fix lands with RED then GREEN, and the factory reports tokens per verified patch
+for the week (slice M1).
+
 ## Next: wave 1, cheap gaps and CI hygiene
 
 Seven bees in parallel, all under preflight. Several overlap Track D above; whichever lands first
@@ -80,7 +100,7 @@ closes the other.
 | W1-4 | `contract/v1/STATUS.json` lists provisioning and landing export (codemap gaps #8) | hyvv |
 | W1-5 | protocol map: Rails status and both observability ids | rizzstack (done by Track A, #9) |
 | W1-6 | hook count (three) and schema-id note (codemap gaps #5) | orbit-control-plane docs |
-| W1-7 | mark the legacy `pc-launcher/launcher.py` (codemap gaps #6) | orbitdesktop |
+| W1-7 | ~~mark the legacy `pc-launcher/launcher.py` (codemap gaps #6)~~ absorbed by wave D: delete it (owner decision) | orbitdesktop |
 | W1-M | pin bump after merges; close fixed gaps | rizzstack codemap |
 
 ## Next: wave 2, memory on
@@ -92,7 +112,7 @@ closes the other.
 | W2-3 | capture one memory record per verified attempt, a no-op unless `MEMORY_ENABLED=1` | bundlebees |
 | W2-4 | recall into the brief's READ FIRST, behind the flag | bundlebees |
 | W2-5 | `verify_workers` in shadow mode (report only, never blocks) | bundlebees |
-| W2-G | a two-bee canary with memory on | Hermes host restart (owner-gated) |
+| W2-G | a two-bee canary with memory on: **moved behind wave F**, so it runs only after the A/B harness measures memory's effect | Hermes host restart (owner-gated) |
 
 ## Next: wave 3, Rails release and Windows
 
@@ -100,7 +120,7 @@ Blocked on the owner's choices in the Rails [release decision](https://github.co
 
 | ID | Goal | Repo |
 |---|---|---|
-| W3-1 | implement the chosen worker-assignment binding, then re-vendor | hyvv, bundlebees |
+| W3-1 | implement the chosen worker-assignment binding, then re-vendor. Wave C generalizes this into the signed dispatch ticket. | hyvv, bundlebees |
 | W3-2 | a real Windows bee-ci runner instead of the stub | workflow `contrib/bee-ci/runners/windows/` |
 | W3-3 | a Rails canary on one project (`rails_enabled` on), then the release decision | config only (owner-gated) |
 
@@ -111,7 +131,7 @@ Blocked on the owner's choices in the Rails [release decision](https://github.co
 | W4-1 | the token router on a test Orbit with the current model plan as its only upstream | orbitdesktop |
 | W4-2 | hyvv provisioning dry run and doc | hyvv |
 | W4-3 | Connect GitHub (Orbit #27) read-only trial; rebase or close the Colab window (#18) | orbitdesktop |
-| W4-4 | a refresh check for vendored slop-lint copies (overlaps Track D item 24) | hyvv, bundlebees |
+| W4-4 | ~~a refresh check for vendored slop-lint copies~~ absorbed by wave D's core vendoring check | hyvv, bundlebees |
 | W4-5 | the Hive decision adapter in shadow mode | orbitdesktop |
 | W4-H | orphan-branch and stale-PR lists (workflow #7, orbitdesktop #17, #18), list only | coordinator |
 
@@ -130,7 +150,8 @@ Blocked on the owner's choices in the Rails [release decision](https://github.co
 | Gate | Decision | Blocks |
 |---|---|---|
 | G7 | each merge to `main` (or the standing heartbeat rule) | every item |
-| G8 | restart with `MEMORY_ENABLED=1` for a two-bee canary | W2-G |
+| G8 | restart with `MEMORY_ENABLED=1` for a two-bee canary, after wave F's A/B | W2-G |
 | G9 | Rails: the worker-assignment binding; Windows canary first | wave 3 |
 | G10 | close workflow #7 and orbitdesktop #17, #18; delete orphan branches | W4-H |
 | G11 | later: Orbit preflight blocking, lessons-check blocking, rename or document the observability id, retire the legacy launcher | follow-ups |
+| G12 | approve the wave A slices into `backlog.json`; set the `CONTRACT_GATE_MODE` enforcement date | wave A |

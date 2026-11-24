@@ -1,0 +1,291 @@
+{
+  "objective": "Move the path floor into bundlebees_plugin/policy/risk-floor.json (schema bundlebees.risk-floor/1), add conftest.py, tests/fixtures/**, pytest.ini, tox.ini, setup.cfg, noxfile.py and sitecustomize.py as high, drop _SENSITIVE_MODULES, and fail closed to high when the policy is missing or unreadable.",
+  "project": "bundlebees",
+  "branch": "feat/wave-a-a7",
+  "source_rev": "a2bc902e6b3b2529a420136090857492309a0edb",
+  "assigned_files": [
+    "bundlebees_plugin/risk.py",
+    "bundlebees_plugin/policy/risk-floor.json",
+    "docs/risk-tiers.md"
+  ],
+  "wave": "A",
+  "acceptance": {
+    "criteria": [
+      "Risk floor comes from a versioned policy file and covers test-harness files",
+      "All approved tests named in tests pass; no approved test file is edited.",
+      "No other test in the repo regresses (full suite green)."
+    ],
+    "commands": [
+      "python -m pytest -q tests/test_risk_floor_policy.py"
+    ],
+    "tests": [
+      "tests/test_risk_floor_policy.py"
+    ]
+  },
+  "tests": [
+    "tests/test_risk_floor_policy.py"
+  ],
+  "commands": [
+    "python -m pytest -q tests/test_risk_floor_policy.py"
+  ],
+  "budget": {
+    "timeout_s": 2700,
+    "max_tool_calls": 90
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "defines which briefs need contracts (review Fix-now #8)",
+      "changes how many briefs reach high tier; MI-31 model routing keys off this"
+    ]
+  },
+  "deps": [],
+  "contract": {
+    "contract_version": "acdd/1",
+    "id": "wave-a-A7",
+    "title": "Risk floor comes from a versioned policy file and covers test-harness files",
+    "outcome": {
+      "summary": "Move the path floor into bundlebees_plugin/policy/risk-floor.json (schema bundlebees.risk-floor/1), add conftest.py, tests/fixtures/**, pytest.ini, tox.ini, setup.cfg, noxfile.py and sitecustomize.py as high, drop _SENSITIVE_MODULES, and fail closed to high when the policy is missing or unreadable.",
+      "observable_behavior": [
+        "Risk floor comes from a versioned policy file and covers test-harness files"
+      ]
+    },
+    "interfaces": [
+      {
+        "name": "bundlebees_plugin.risk.derive_floor",
+        "kind": "function",
+        "change": "modify"
+      },
+      {
+        "name": "bundlebees_plugin/policy/risk-floor.json",
+        "kind": "file",
+        "change": "add"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "statement": "missing policy fails closed",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_missing_policy_fails_closed"
+        ]
+      },
+      {
+        "id": "AC-002",
+        "statement": "plain tests and docs stay low[README.md]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_plain_tests_and_docs_stay_low[README.md]"
+        ],
+        "regression": true
+      },
+      {
+        "id": "AC-003",
+        "statement": "plain tests and docs stay low[docs/x.md]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_plain_tests_and_docs_stay_low[docs/x.md]"
+        ],
+        "regression": true
+      },
+      {
+        "id": "AC-004",
+        "statement": "plain tests and docs stay low[tests/test a.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_plain_tests_and_docs_stay_low[tests/test_a.py]"
+        ],
+        "regression": true
+      },
+      {
+        "id": "AC-005",
+        "statement": "policy file exists and carries the rules",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_policy_file_exists_and_carries_the_rules"
+        ]
+      },
+      {
+        "id": "AC-006",
+        "statement": "sensitive basenames are no longer hard coded",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_sensitive_basenames_are_no_longer_hard_coded"
+        ]
+      },
+      {
+        "id": "AC-007",
+        "statement": "test infrastructure is high[.github/workflows/ci.yml]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[.github/workflows/ci.yml]"
+        ],
+        "regression": true
+      },
+      {
+        "id": "AC-008",
+        "statement": "test infrastructure is high[conftest.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[conftest.py]"
+        ]
+      },
+      {
+        "id": "AC-009",
+        "statement": "test infrastructure is high[noxfile.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[noxfile.py]"
+        ]
+      },
+      {
+        "id": "AC-010",
+        "statement": "test infrastructure is high[pytest.ini]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[pytest.ini]"
+        ]
+      },
+      {
+        "id": "AC-011",
+        "statement": "test infrastructure is high[setup.cfg]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[setup.cfg]"
+        ]
+      },
+      {
+        "id": "AC-012",
+        "statement": "test infrastructure is high[sitecustomize.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[sitecustomize.py]"
+        ]
+      },
+      {
+        "id": "AC-013",
+        "statement": "test infrastructure is high[src/pkg/conftest.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[src/pkg/conftest.py]"
+        ]
+      },
+      {
+        "id": "AC-014",
+        "statement": "test infrastructure is high[tests/conftest.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/conftest.py]"
+        ]
+      },
+      {
+        "id": "AC-015",
+        "statement": "test infrastructure is high[tests/fixtures/data.json]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/fixtures/data.json]"
+        ]
+      },
+      {
+        "id": "AC-016",
+        "statement": "test infrastructure is high[tests/fixtures/sub/case.py]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/fixtures/sub/case.py]"
+        ]
+      },
+      {
+        "id": "AC-017",
+        "statement": "test infrastructure is high[tox.ini]",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tox.ini]"
+        ]
+      },
+      {
+        "id": "AC-018",
+        "statement": "unreadable policy fails closed",
+        "verification": "test",
+        "tests": [
+          "tests/test_risk_floor_policy.py::test_unreadable_policy_fails_closed"
+        ]
+      }
+    ],
+    "dependencies": [],
+    "scope": {
+      "assigned_files": [
+        "bundlebees_plugin/risk.py",
+        "bundlebees_plugin/policy/risk-floor.json",
+        "docs/risk-tiers.md"
+      ],
+      "test_files": [
+        "tests/test_risk_floor_policy.py"
+      ],
+      "prohibited": [
+        ".github/workflows/**",
+        "CHANGELOG.md"
+      ]
+    },
+    "source_rev": "a2bc902e6b3b2529a420136090857492309a0edb",
+    "tdd": {
+      "applicable": true,
+      "test_first": true
+    },
+    "verification": {
+      "independent": true,
+      "commands": [
+        "python -m pytest -q tests/test_risk_floor_policy.py"
+      ]
+    },
+    "evidence_required": [
+      "red",
+      "green",
+      "review"
+    ],
+    "authorization": {
+      "human_gates": [
+        "merge",
+        "tag",
+        "release",
+        "deploy",
+        "publish"
+      ],
+      "not_authorized": [
+        "merge",
+        "deploy",
+        "restart",
+        "tag",
+        "branch deletion",
+        "live canary"
+      ]
+    },
+    "risk": {
+      "tier": "high",
+      "reasons": [
+        "defines which briefs need contracts (review Fix-now #8)",
+        "changes how many briefs reach high tier; MI-31 model routing keys off this"
+      ]
+    },
+    "review": {
+      "status": "approved",
+      "approved_by": "rizzstack plan coordinator (draft; pending Kyle)",
+      "approved_at": "2026-11-24T16:51:58Z",
+      "contract_sha256": "f95f6f734cc555a6d74c4a8286bdcf63beadd1b83786f8fe6ce85d69fb9eed9c",
+      "test_collection": {
+        "manifest_sha256": "22f2d1c3ec18fe6183c494bc67d90fdc67b0861f078b56da9e81651f41549469",
+        "source_rev": "a2bc902e6b3b2529a420136090857492309a0edb",
+        "collected": 18
+      }
+    }
+  },
+  "failing_output": "FAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/conftest.py]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[conftest.py]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[src/pkg/conftest.py]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/fixtures/data.json]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tests/fixtures/sub/case.py]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[pytest.ini]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[tox.ini]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[setup.cfg]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[noxfile.py]\nFAILED tests/test_risk_floor_policy.py::test_test_infrastructure_is_high[sitecustomize.py]\nFAILED tests/test_risk_floor_policy.py::test_policy_file_exists_and_carries_the_rules\nFAILED tests/test_risk_floor_policy.py::test_sensitive_basenames_are_no_longer_hard_coded\nFAILED tests/test_risk_floor_policy.py::test_unreadable_policy_fails_closed\nFAILED tests/test_risk_floor_policy.py::test_missing_policy_fails_closed - Ty...",
+  "affected_tests": [
+    "tests/test_preflight.py",
+    "tests/test_risk.py",
+    "tests/test_risk_advisory.py",
+    "tests/test_risk_docstrings.py",
+    "tests/test_risk_enforcement.py",
+    "tests/test_security.py"
+  ]
+}
