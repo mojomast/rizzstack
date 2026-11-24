@@ -82,6 +82,8 @@ Open **`demo-run/ACCEPTANCE.md`** to see the verdict for each requirement. Follo
 
 This repository is the map. Each component has its own implementation, setup instructions, and release history. Start with the part you need.
 
+**Agents and contributors:** the [code map](codemap/README.md) covers every repo at pinned commits: a one-screen overview, a page per repo, cross-repo contracts, change recipes, invariants, and a regenerable symbol index (`python3 scripts/codemap/build.py`). Agents start at [AGENTS.md](AGENTS.md).
+
 | Project | Role | Start here if you want to… |
 |---|---|---|
 | [**Workflow**](https://github.com/mojomast/workflow) | Defines the contracts, tests, evidence formats, and handoffs that the other projects share. | [Write a feature contract](https://github.com/mojomast/workflow/blob/main/templates/CONTRACT.md) or use the method with your own team. |

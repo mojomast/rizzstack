@@ -1,0 +1,62 @@
+name: codemap
+
+on:
+  pull_request:
+    paths: ["codemap/**", "scripts/codemap/**", "AGENTS.md", "CLAUDE.md", "llms.txt", ".github/workflows/codemap.yml"]
+  push:
+    branches: [main]
+    paths: ["codemap/**", "scripts/codemap/**", "AGENTS.md", "CLAUDE.md", "llms.txt", ".github/workflows/codemap.yml"]
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codemap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: codemap
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Generator unit tests
+        run: python3 -m unittest discover -s scripts/codemap -p 'test_*.py' -v
+      - name: Regenerate from pinned SHAs and diff; verify narrative paths and budgets
+        run: python3 scripts/codemap/build.py --check --workdir "$RUNNER_TEMP/codemap-src"
+      - name: Token budgets and pin freshness (informational)
+        if: always()
+        run: |
+          {
+            echo "## codemap layer sizes (est. tokens)"; echo '```'
+            python3 scripts/codemap/build.py --budgets
+            echo '```'; echo "## pins vs upstream"; echo '```'
+            python3 scripts/codemap/build.py --upstream
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  staleness:
+    name: codemap pin staleness (weekly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Report pins behind upstream main
+        run: |
+          { echo "## codemap pins vs upstream"; echo '```'; python3 scripts/codemap/build.py --upstream; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
