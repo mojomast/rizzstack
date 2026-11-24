@@ -22,3 +22,14 @@ Status checked against each repository's `main` on 24 November 2026 (America/Tor
 
 Rule: new agents/providers/orchestrators implement these contracts; the stack does not
 learn their internals.
+
+## Owner decisions are queue state, not prose
+
+An owner answer takes effect only when it reaches the machine queue. The coordinator reads its plan first and never auto-dispatches a slice marked `blocked-on-owner`, so a decision recorded only in a campaign log is restated as outstanding by every later beat while the queue sits idle. Write the decision as a queue transition, in the same action:
+
+1. **No beat holds the claim.** Back up the plan, move every gate the decision answers off `blocked-on-owner`, add `state.owner_decisions_YYYYMMDDTHHMMZ` with the verbatim answers, and point `next_action` at the newly unblocked slice.
+2. **A beat owns the claim.** Write `owner-decisions-YYYYMMDDTHHMMZ.json` beside the plan and append the record section; the beat's first duty folds any sidecar newer than `last_coordinator_touch` before dispatch.
+3. **A redacted or missing answer is a missing answer.** Name the exact field that needs restating. Never infer it, never mark the gate closed.
+4. **No gate is closed until the plan no longer reads `blocked-on-owner`.** Recorded and unblocked are different states.
+
+Failure this closes: a decision four later beats could read in the log and none acted on, because none was allowed to dispatch a `blocked-on-owner` slice.

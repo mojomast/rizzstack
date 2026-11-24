@@ -1,0 +1,140 @@
+{
+  "contract_version": "acdd/1",
+  "id": "wave-a-A12a",
+  "title": "bee-landed dataschema is the schema $id; legacy typo URL still accepted",
+  "outcome": {
+    "summary": "tools/bee_landed.py sets DATASCHEMA to the schema $id, keeps the typo URL in LEGACY_DATASCHEMAS (accepted, flagged deprecated) and exposes dataschema_status(); the schema and docs/29 name both values. Type rizzstack.bee.landed.v1 and data schema rizzstack.bee-landed/1 are unchanged.",
+    "observable_behavior": [
+      "bee-landed dataschema is the schema $id; legacy typo URL still accepted"
+    ]
+  },
+  "interfaces": [
+    {
+      "name": "tools.bee_landed.DATASCHEMA",
+      "kind": "other",
+      "change": "modify"
+    },
+    {
+      "name": "schemas/bee-landed.schema.json",
+      "kind": "schema",
+      "change": "modify"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "canonical dataschema is the schema id",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_canonical_dataschema_is_the_schema_id"
+      ]
+    },
+    {
+      "id": "AC-002",
+      "statement": "chapter names the canonical value",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_chapter_names_the_canonical_value"
+      ]
+    },
+    {
+      "id": "AC-003",
+      "statement": "dataschema is classified",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_dataschema_is_classified"
+      ]
+    },
+    {
+      "id": "AC-004",
+      "statement": "frozen ids are unchanged",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_frozen_ids_are_unchanged"
+      ],
+      "regression": true
+    },
+    {
+      "id": "AC-005",
+      "statement": "legacy value is listed as deprecated",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_legacy_value_is_listed_as_deprecated"
+      ]
+    },
+    {
+      "id": "AC-006",
+      "statement": "schema documents the canonical value",
+      "verification": "test",
+      "tests": [
+        "tests/test_bee_landed_dataschema.py::DataschemaIdentity::test_schema_documents_the_canonical_value"
+      ]
+    }
+  ],
+  "dependencies": [],
+  "scope": {
+    "assigned_files": [
+      "tools/bee_landed.py",
+      "schemas/bee-landed.schema.json",
+      "docs/29-bee-landed.md"
+    ],
+    "test_files": [
+      "tests/test_bee_landed_dataschema.py"
+    ],
+    "prohibited": [
+      ".github/workflows/**",
+      "CHANGELOG.md"
+    ]
+  },
+  "source_rev": "c87c87ed45a4239baad937079977beb8429f5ad3",
+  "tdd": {
+    "applicable": true,
+    "test_first": true
+  },
+  "verification": {
+    "independent": true,
+    "commands": [
+      "python -m pytest -q tests/test_bee_landed_dataschema.py"
+    ]
+  },
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "deploy",
+      "restart",
+      "tag",
+      "branch deletion",
+      "live canary"
+    ]
+  },
+  "risk": {
+    "tier": "high",
+    "reasons": [
+      "schemas/*.json is high on the path floor",
+      "cross-repo event contract"
+    ]
+  },
+  "review": {
+    "status": "approved",
+    "approved_by": "Kyle Durepos (chat t1650u, t1651u)",
+    "approved_at": "2026-11-24T17:16:01Z",
+    "contract_sha256": "906bbfe2b95f98a9e25d90027bf7917b642e4469b935993a28c8c90686948ecf",
+    "test_collection": {
+      "manifest_sha256": "3309ae97bcd61eb2ccb3ec5896ed4a6cd09ffb0bcccb9823e09306d7323e74de",
+      "source_rev": "c87c87ed45a4239baad937079977beb8429f5ad3",
+      "collected": 6
+    }
+  }
+}
