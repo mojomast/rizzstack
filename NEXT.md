@@ -67,6 +67,16 @@ Five tracks, one PR per track, each checked against `main` before changing anyth
 - **D — CI hygiene:** pinned actions, gitleaks and slop-lint for uirizz; gitleaks for rizzstack; first CI for orbit-control-plane; a check command for vendored slop-lint copies.
 - **E — decisions for the owner:** next milestone, first coordinated release, Rails qualification runs, branch cleanup, the legacy launcher, whether `codemap/invariants.md` stays public, and a balance rule for future waves.
 
+## Next milestone
+
+**Decided 2026-11-24 (owner): option B.** Decision #25 splits the next milestone in two.
+
+- **M-A — a stranger can run Orbit locally:** F11 (`workflow/plans/packets/F11-runnable-by-anyone.md`), then F12 (`workflow/plans/packets/F12-connect-github-repo-picker.md`), which is Orbit #27 ([orbitdesktop #27](https://github.com/mojomast/orbitdesktop/pull/27), now retargeted to `main`).
+- **M-B — a stranger can lend a worker:** F15 (`workflow/plans/packets/F15-relay.md`) -> F18 (`workflow/plans/packets/F18-revocable-tokens.md`) -> F16/F17 (`workflow/plans/packets/F16-tailcat.md`, `workflow/plans/packets/F17-join-probing.md`) -> F19 (`workflow/plans/packets/F19-live-host-join-install.md`).
+- **Separate later owner yeses:** the F19 throwaway rehearsal, the ghcr image publish and any live-host install. None of them is granted by this decision.
+
+Option A (one big milestone) and option C (M-A only) were not chosen.
+
 ## Next: the next-level review, waves A-F
 
 Source: the [Nov 24 next-level review](https://github.com/mojomast/rizzstack/pull/17)
@@ -77,7 +87,7 @@ check you can run.
 
 | Wave | Goal | Maps onto the existing plan | Plan |
 |---|---|---|---|
-| A | stop the leaks: Fix-now rows 1-13 and the quick token wins | new; runs before waves 1-4 | 21 slices with RED tests, leases, tiers and preflight: [`plans/wave-a/`](plans/wave-a/README.md). Not in `backlog.json` until the owner approves them. |
+| A | stop the leaks: Fix-now rows 1-13 and the quick token wins | new; runs before waves 1-4 | 21 slices with RED tests, leases, tiers and preflight: [`plans/wave-a/`](plans/wave-a/README.md). **Approved by the owner (Kyle t1650u, t1651u): every lane runs in parallel** on the Hermes kanban, lane successors after their predecessor merges; recorded in `backlog.json` ([workflow #147](https://github.com/mojomast/workflow/pull/147)). |
 | B | one worker contract: `rizzstack.brief/1`, `rizzstack.attempt/1` | new; finishes the bee-landed id fix started by A12a and HY-3 | [workflow #141](https://github.com/mojomast/workflow/pull/141) |
 | C | gates at the boundary: a signed dispatch ticket | **W3-1, generalized**: the Rails worker-assignment binding becomes one case of the ticket | [hyvv #42](https://github.com/mojomast/hyvv/pull/42) |
 | D | one core, one log: `rizzstack-core`, Rails as the only log, one control loop, unwired code out | **absorbs W4-4** (vendored-copy refresh becomes the core vendoring check) **and W1-7** (the legacy `pc-launcher` is deleted, not marked) | [workflow #142](https://github.com/mojomast/workflow/pull/142) |
@@ -150,8 +160,8 @@ Blocked on the owner's choices in the Rails [release decision](https://github.co
 | Gate | Decision | Blocks |
 |---|---|---|
 | G7 | each merge to `main` (or the standing heartbeat rule) | every item |
-| G8 | restart with `MEMORY_ENABLED=1` for a two-bee canary, after wave F's A/B | W2-G |
+| G8 | restart with `MEMORY_ENABLED=1` for a two-bee canary: **paused** until wave F's experiment F1 reports (Kyle t1650u) | W2-G |
 | G9 | Rails: the worker-assignment binding; Windows canary first | wave 3 |
 | G10 | close workflow #7 and orbitdesktop #17, #18; delete orphan branches | W4-H |
 | G11 | later: Orbit preflight blocking, lessons-check blocking, rename or document the observability id, retire the legacy launcher | follow-ups |
-| G12 | approve the wave A slices into `backlog.json`; set the `CONTRACT_GATE_MODE` enforcement date | wave A |
+| G12 | wave A slices approved (Kyle t1650u, t1651u). `CONTRACT_GATE_MODE`: plan agreed, not flipped: enforce at medium tier one week after A1a, A1b and A11 merge | wave A |

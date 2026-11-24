@@ -160,11 +160,11 @@
   },
   "review": {
     "status": "approved",
-    "approved_by": "rizzstack plan coordinator (draft; pending Kyle)",
-    "approved_at": "2026-11-24T16:51:57Z",
+    "approved_by": "Kyle Durepos (chat t1650u, t1651u)",
+    "approved_at": "2026-11-24T17:16:24Z",
     "contract_sha256": "7c82c54d1cdbb54bc13ad42d3f71f2d1f77a46f7ffed5e6d0c1e8226e567e246",
     "test_collection": {
-      "manifest_sha256": "91c567b8ff726e4167601195b4d0d8a590b4e6ba49cb45b70deae308ec5f4483",
+      "manifest_sha256": "edd3b206787308e1e658a2fa1545ba9114d420dd2661af991708caec05afb693",
       "source_rev": "f0e77f27c8c195c36d7259420d90b65a78d45f69",
       "collected": 10
     }

@@ -5,8 +5,12 @@ Source: the [Nov 24 next-level review](https://github.com/mojomast/rizzstack/pul
 (rizzstack `d057e7d`, workflow `ae9c080`, hyvv `fdd2354`, bundlebees `82b9118`, orbitdesktop
 `0765a93`, orbit-control-plane `bc56669`, uirizz `302f1ac`) on 24 November 2026.
 
-**Status: proposed. None of these slices is in `workflow/plans/backlog.json` and nothing has been
-dispatched.** The owner approves slices into the backlog.
+**Status: approved (Kyle, chat t1650u and t1651u): every lane runs in parallel.** Each slice is one task
+on the rizzstack-t1634 Hermes kanban (lane successors are child tasks that start after their parent
+merges) and a `WA-*` record in `workflow/plans/backlog.json` ([workflow #147](https://github.com/mojomast/workflow/pull/147)).
+High-tier contracts were re-frozen on the dispatch host with Kyle as approver; the hashes below are
+unchanged (the hash does not cover the review block). Lane successors are repinned (main merged into
+their RED branch, contract re-frozen) when their predecessor merges.
 
 Each slice has:
 
@@ -15,11 +19,7 @@ Each slice has:
   (test-context briefs);
 - approved failing tests committed on a `red/wave-a-*` branch in the owning repo (the RED commit);
 - for high tier, an `acdd/1` contract in [`contracts/`](contracts/), frozen with
-  `bundlebees contract freeze` and a signed test-collection manifest at the RED commit. They are
-  marked `approved_by: rizzstack plan coordinator (draft; pending Kyle)`. That is not the owner's
-  approval: re-freeze with the owner as approver before dispatch. The contract hash does not cover
-  the review block, so it stays the same. The collection manifest is signed with the coordinator
-  box's key, so it has to be collected again on the dispatch host.
+  `bundlebees contract freeze` and a signed test-collection manifest at the RED commit. They are approved by Kyle Durepos (chat t1650u, t1651u) and were frozen on the dispatch host, so the signed collection manifests live in that host's plugin data.
 - a `bundlebees preflight` verdict (`python -m bundlebees_plugin.preflight <brief> --state-dir ...`).
 
 Leases leave out `CHANGELOG.md`. The coordinator adds the changelog line when it opens the PR (see

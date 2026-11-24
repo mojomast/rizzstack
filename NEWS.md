@@ -11,6 +11,16 @@ failures is worthless.
 *Dates in this log are America/Toronto. Counts are merged pull requests read from GitHub for that
 day across workflow, bundlebees, hyvv, orbitdesktop, orbit-control-plane, uirizz and rizzstack.*
 
+### Decided
+
+- **Next milestone: option B** (decision #25). The owner chose option B — M-A "a stranger can run
+  Orbit locally" pairs F11 with F12 and retargets Orbit
+  [#27](https://github.com/mojomast/orbitdesktop/pull/27) to `main`, while M-B "a stranger can lend a
+  worker" runs F15 -> F18 -> F16/F17 -> F19 with separate later yeses for the F19 throwaway rehearsal,
+  the ghcr image publish and any live-host install — over option A (one big milestone) and option C
+  (M-A only), and Orbit [#17](https://github.com/mojomast/orbitdesktop/pull/17) and
+  [#18](https://github.com/mojomast/orbitdesktop/pull/18) are closed as superseded.
+
 ### Landed
 
 - **The code map** ([rizzstack #5](https://github.com/mojomast/rizzstack/pull/5), merged 02:35 as
