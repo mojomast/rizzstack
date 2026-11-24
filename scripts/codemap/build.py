@@ -40,6 +40,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 GENERATOR_VERSION = "1.0.0"
+# The generator parses Python sources with this interpreter's `ast`; older versions cannot read newer
+# syntax (3.11 cannot parse PEP 701 f-strings) and would silently drop symbols. Output is only
+# reproducible on the version CI uses (.github/workflows/codemap.yml), so generate/--check refuse others.
+REQUIRED_PYTHON = "3.12"
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ROOT / "scripts" / "codemap" / "sources.json"
 OUT = ROOT / "codemap" / "generated"
@@ -87,6 +91,10 @@ JS_DEFS = [
     (re.compile(r"^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(([^)]*)\)", re.M), "function", False),
     (re.compile(r"^class\s+([A-Za-z_$][\w$]*)", re.M), "class", False),
 ]
+# Hermes dashboard plugins: dashboard/manifest.json {"name", "api": "<file>"}; the host mounts the
+# router at /api/plugins/<name>/. Only that file's route decorators are read, so generic `/health`-style
+# routes elsewhere and bare relative client paths don't flood the matrix.
+ROUTE_DECORATOR = re.compile(r"""^\s*@\w+\.(?:get|post|put|patch|delete)\(\s*['"](/[A-Za-z0-9_\-./{}:<>*]*)['"]""", re.M)
 JS_EXPORT_LIST = re.compile(r"^export\s*\{([^}]*)\}", re.M)
 STOP_SYMBOLS = {"main", "run", "init", "get", "set", "default", "setup", "handler", "app", "data", "self",
                 "name", "value", "result", "error", "test", "tests", "config", "path", "args", "kwargs"}
@@ -100,13 +108,69 @@ SCRUB = [
     (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), "<redacted>"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<redacted>"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "<redacted>"),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}"), "<redacted>"),                       # Google API key
+    (re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}"), "<redacted>"),                     # GitLab personal access token
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), "<redacted>"),  # JWT
+    (re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9_/\-]{10,}"), "<redacted>"),  # Slack webhook
 ]
 
+# Machine-local private names (internal host names and the like) are DETECTED, never rewritten:
+# rewriting made output depend on the machine, so CI regenerated different bytes and --check failed,
+# while forgetting the setting committed the names silently. Patterns live in a gitignored file
+# (one regex per line, `#` comments); --verify-docs and --check fail if any tracked file matches.
+PRIVATE_NAMES_REL = "scripts/codemap/private-names.local"
 
-# Optional extra private names (regex, e.g. internal host names) from the environment, so the
-# names themselves are never committed: CODEMAP_PRIVATE_NAMES='name-a|name-b'
-if os.environ.get("CODEMAP_PRIVATE_NAMES"):
-    SCRUB.append((re.compile(r"\b(?:" + os.environ["CODEMAP_PRIVATE_NAMES"] + r")\b"), "private-host"))
+
+def private_names_file() -> Path:
+    return Path(os.environ.get("CODEMAP_PRIVATE_NAMES_FILE") or (ROOT / PRIVATE_NAMES_REL))
+
+
+def load_private_patterns() -> tuple[list[tuple[int, re.Pattern]], list[str]]:
+    """(numbered compiled patterns, problems). Missing file -> no patterns. Never affects output."""
+    pats, probs, raw = [], [], []
+    f = private_names_file()
+    if f.is_file():
+        raw += [(i, line.strip()) for i, line in enumerate(f.read_text().splitlines(), 1)]
+    if os.environ.get("CODEMAP_PRIVATE_NAMES"):  # legacy setting: still detected, no longer rewrites
+        print(f"note: CODEMAP_PRIVATE_NAMES only detects now; move its patterns to {PRIVATE_NAMES_REL}", file=sys.stderr)
+        raw.append(("env", os.environ["CODEMAP_PRIVATE_NAMES"]))
+    for i, line in raw:
+        if not line or line.startswith("#"):
+            continue
+        try:
+            pats.append((i, re.compile(r"(?<![\w-])(?:" + line + r")(?![\w-])", re.I)))
+        except re.error as e:
+            probs.append(f"{PRIVATE_NAMES_REL} line {i}: invalid regex ({e.msg})")
+    return pats, probs
+
+
+def private_name_problems(files: dict[str, str]) -> list[str]:
+    """files: {repo-relative path: text}. Reports path:line and pattern number, never the match itself."""
+    pats, probs = load_private_patterns()
+    if not pats:
+        return probs
+    for rel in sorted(files):
+        for lineno, line in enumerate(files[rel].splitlines(), 1):
+            for i, pat in pats:
+                if pat.search(line):
+                    probs.append(f"{rel}:{lineno}: matches private name (pattern {PRIVATE_NAMES_REL} line {i})")
+    return probs
+
+
+def tracked_files() -> list[str]:
+    return sh("git", "ls-files", cwd=ROOT).splitlines()
+
+
+def tracked_texts() -> dict[str, str]:
+    out = {}
+    for rel in tracked_files():
+        f = ROOT / rel
+        if f.is_file():
+            try:
+                out[rel] = f.read_text()
+            except (UnicodeDecodeError, OSError):
+                pass
+    return out
 
 
 def scrub(s: str) -> str:
@@ -184,7 +248,9 @@ def analyze_python(text: str):
     syms, imports = [], []
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError) as e:
+        print(f"warning: python file not parsed on {sys.version.split()[0]} ({type(e).__name__}); its symbols are omitted",
+              file=sys.stderr)
         return syms, imports, ""
     mdoc = first_line(ast.get_docstring(tree))
     for node in tree.body:
@@ -433,6 +499,20 @@ def index_repo(repo: dict, path: Path, excludes: list[str]) -> dict:
                 if len(hp) > 4:
                     http_paths[hp].add(p)
         tokens[p] = Counter(IDENT.findall(t))
+
+    for p, t in sorted(texts.items()):
+        if p.rsplit("/", 1)[-1] != "manifest.json" or p.count("/") > 1:
+            continue
+        try:
+            man = json.loads(t)
+        except json.JSONDecodeError:
+            continue
+        if not (isinstance(man, dict) and isinstance(man.get("name"), str) and isinstance(man.get("api"), str)):
+            continue
+        api = (p.rsplit("/", 1)[0] + "/" if "/" in p else "") + man["api"]
+        if api in texts and re.fullmatch(r"[a-z0-9][a-z0-9_\-]*", man["name"]):
+            for m in ROUTE_DECORATOR.finditer(texts[api]):
+                http_paths[f"/api/plugins/{man['name']}{m.group(1).rstrip('/') or ''}"].add(api)
 
     # reference graph (Aider-style): referencer file -> defining file, weighted by identifier
     defines = defaultdict(set)
@@ -835,7 +915,10 @@ def verify_docs() -> list[str]:
     docs = []
     for g in DOC_GLOBS:
         docs += sorted(ROOT.glob(g))
-    local_files = set(sh("git", "ls-files", cwd=ROOT).splitlines()) | {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and ".git/" not in str(p)}
+    # Only tracked files count: CI sees a clean checkout, so an untracked local file must not
+    # make a reference look valid here and then fail (or worse, dangle) once pushed.
+    tracked = tracked_files()
+    local_files = set(tracked) | {"/".join(t.split("/")[:i]) for t in tracked for i in range(1, t.count("/") + 1)}
     for d in docs:
         rel = str(d.relative_to(ROOT))
         text = d.read_text()
@@ -854,7 +937,7 @@ def verify_docs() -> list[str]:
                         problems.append(f"{rel}:{lineno}: `{tok}` not found in {head}@pinned")
                 elif tok.startswith(("codemap/", "scripts/codemap/", "docs/")) and not any(ch in tok for ch in "*{}<>"):
                     t = tok.rstrip("/")
-                    if t not in local_files and not (ROOT / t).exists():
+                    if t not in local_files:
                         problems.append(f"{rel}:{lineno}: `{tok}` not found in this repo")
         for pat, rep in SCRUB:
             if pat.search(text):
@@ -864,6 +947,8 @@ def verify_docs() -> list[str]:
             t = est_tokens(f.read_text())
             if t > limit:
                 problems.append(f"{f.relative_to(ROOT)}: ~{t} tokens exceeds budget {limit}")
+    # machine-local private names anywhere in what would be pushed (tracked files, generated layer included)
+    problems += private_name_problems(tracked_texts())
     return problems
 
 
@@ -889,12 +974,25 @@ def upstream() -> int:
             if line.endswith("\tHEAD") and not line.startswith("ref:"):
                 head = line.split("\t")[0]
         state = "current" if head == r["sha"] else ("UNKNOWN" if not head else "STALE")
-        stale += state == "STALE"
+        stale += state in ("STALE", "UNKNOWN")  # unreadable upstream must not pass --strict silently
         print(f"{r['name']:<22} pinned {r['sha'][:7]}  upstream {head[:7] or '?':<7}  {state}")
     return stale
 
 
-def main() -> int:
+def runtime_python() -> tuple[int, int]:
+    return sys.version_info[:2]
+
+
+def python_mismatch(version) -> str | None:
+    want = tuple(int(x) for x in REQUIRED_PYTHON.split("."))
+    if tuple(version[:2]) == want:
+        return None
+    have = ".".join(str(x) for x in version[:2])
+    return (f"codemap generation needs Python {REQUIRED_PYTHON} (the CI version); this is {have}. Other versions parse "
+            f"Python sources differently and produce drift. Try: uv run --python {REQUIRED_PYTHON} python3 scripts/codemap/build.py ...")
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="regenerate into a temp dir and fail if committed output differs")
     ap.add_argument("--verify-docs", action="store_true", help="check repo/path references and token budgets only")
@@ -906,7 +1004,7 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=1500, help="with --slice: token budget for the output (default 1500)")
     ap.add_argument("--workdir", default=os.environ.get("CODEMAP_WORKDIR", str(Path(tempfile.gettempdir()) / "rizzstack-codemap-src")))
     ap.add_argument("--src", action="append", default=[], metavar="NAME=PATH", help="reuse an existing checkout at the pinned SHA")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     overrides = dict(s.split("=", 1) for s in a.src)
     if a.slice:
         import slice as slice_mod
@@ -918,7 +1016,7 @@ def main() -> int:
         return 0
     if a.upstream:
         n = upstream()
-        print(f"{n} stale pin(s)" if n else "all pins current")
+        print(f"{n} stale or unreadable pin(s)" if n else "all pins current")
         return 3 if (n and a.strict) else 0
     if a.budgets:
         print(budget_report())
@@ -927,6 +1025,10 @@ def main() -> int:
         probs = verify_docs()
         print("\n".join(probs) if probs else "docs OK: all repo/path references resolve at the pinned SHAs; budgets met")
         return 1 if probs else 0
+    bad = python_mismatch(runtime_python())
+    if bad:
+        print(bad, file=sys.stderr)
+        return 2
     workdir = Path(a.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     if a.check:
@@ -945,6 +1047,11 @@ def main() -> int:
         return 0
     generate(OUT, workdir, overrides)
     print(f"wrote {OUT.relative_to(ROOT)}/", file=sys.stderr)
+    probs = private_name_problems({str(f.relative_to(ROOT)): f.read_text() for f in sorted(OUT.iterdir()) if f.is_file()})
+    if probs:
+        print("\n".join(probs) + "\nprivate names in generated output: fix the source repo or exclude the file; do not commit",
+              file=sys.stderr)
+        return 1
     return 0
 
 
