@@ -97,6 +97,36 @@ check you can run.
 Wave A exit: each fix lands with RED then GREEN, and the factory reports tokens per verified patch
 for the week (slice M1).
 
+## Waves B and C (in progress)
+
+Queue state is the run-scoped `waves-bc-queue.json` (`rizzstack.waves-bc-queue/1`, generated
+2026-11-25T04:10:00Z, base `71cf42c3` on `workflow`), with draft contracts under
+`contracts/wave-bc/` there. Neither is in this repo. The two rows above are expanded here into
+dispatchable slices.
+
+The overnight B2 and C1 bees succeeded, but their write-back was rejected on a glob lease, so no
+commit and no PR exists for either.
+
+| Slice | Repo | Status | Depends on | Recorded blocker |
+|---|---|---|---|---|
+| B1 | hyvv | ready | - | yaml-parser dependency decision: hyvv is stdlib-only and has no policy for adding one |
+| B2 | workflow | ready | - | RED `9bd22b4` on `red/wave-b-b2`; the GREEN (examples, checker, CI job, `x-status` removal) is not started |
+| B3 | bundlebees | blocked | B2 | numbering conflict: the owner table and `bundlebees/docs/design/wave-b-worker-contract.md` disagree |
+| B4 | hyvv | blocked | B3 | waits on B3's report-only validation |
+| B5 | orbitdesktop, orbit-control-plane | blocked | B3 | waits on B3's report-only drift feed |
+| B6 | hyvv, bundlebees | blocked | B4, B5 | owner enforcement date not set (two weeks of zero drift reports first) |
+| B7 | workflow | blocked | B4, B5 | numbering conflict: the owner table and the design doc disagree |
+| C1 | workflow | ready | - | RED `a43f8de` on `red/wave-c-c1`; the GREEN (schema, example, docs-parity row) is not started |
+| C2 | hyvv | blocked | B1, C1, B5 | waits on the parsable `/v1` contract, the ticket schema and Orbit's `brief/1` |
+| C3 | bundlebees | blocked | C1, B4 | crypto dependency + wave D JCS + key location; the queue records it skipped |
+| C4 | hyvv | blocked | C2, C3 | crypto dependency + wave D JCS + key location; the queue records it skipped |
+| C5 | hyvv, orbitdesktop, orbit-control-plane, workflow | blocked | C4 | crypto dependency + wave D JCS + key location; the queue records it skipped |
+
+Dispatch order: B1 and B2 in parallel; B3 after B2; B4 and B5 after B3; B6 and B7 after B4 and B5;
+C1 alongside B1 and B2; C2 after B1, C1 and B5; C3 after C1 and B4; C4 after C2 and C3; C5 last.
+The queue file records narrower edges for B7 (B2), C2 (B1), C3/C4 (C1, C2) and C5 (C3, C4); the
+order above is the dispatch plan and the file is the queue's own record.
+
 ## Next: wave 1, cheap gaps and CI hygiene
 
 Seven bees in parallel, all under preflight. Several overlap Track D above; whichever lands first
