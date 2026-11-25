@@ -91,5 +91,43 @@
       "B2",
       "C1"
     ]
-  }
+  },
+  "deploys": [
+    {
+      "surface": "driver",
+      "path": "/home/kyle/rizzstack/bundlebees",
+      "head": "9cafbe4bd6c1351ffe123b024bd64d27abe74130",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "9cafbe4bd6c1351ffe123b024bd64d27abe74130"
+    },
+    {
+      "surface": "plugin",
+      "path": "/home/kyle/.hermes/plugins/bundlebees",
+      "head": "49dc1411f657b377db77ac6914b392a76042ab9b",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "49dc1411f657b377db77ac6914b392a76042ab9b"
+    },
+    {
+      "surface": "control-plane",
+      "path": "/home/kyle/rizzstack/orbit-control-plane",
+      "head": "7c6b14342d8ab3d5f3894c0bc3954e9bd79563d8",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "7c6b14342d8ab3d5f3894c0bc3954e9bd79563d8"
+    },
+    {
+      "surface": "ingest",
+      "path": "/home/kyle/rizzstack-ingest/bundlebees",
+      "head": "70145e7f83c4f5330a45856a4d91c1a22642b4ac",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "70145e7f83c4f5330a45856a4d91c1a22642b4ac"
+    }
+  ]
 }

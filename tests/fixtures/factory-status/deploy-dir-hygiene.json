@@ -1,0 +1,133 @@
+{
+  "schema": "rizzstack.factory-status.snapshot/1",
+  "captured_at": "2026-11-25T12:00:00Z",
+  "repos": [
+    {
+      "name": "mojomast/workflow",
+      "last_merge_at": "2026-11-25T11:20:00Z",
+      "pulls": [
+        {
+          "number": 147,
+          "title": "wave B queue state",
+          "url": "https://github.com/mojomast/example/pull/147",
+          "opened_at": "2026-11-25T10:30:00Z",
+          "labels": [
+            "slice",
+            "owner:kyle"
+          ],
+          "in_merge_queue": true,
+          "required_checks": [
+            {
+              "name": "ci-gate",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-25T11:30:00Z",
+              "completed_at": "2026-11-25T11:33:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mojomast/bundlebees",
+      "last_merge_at": "2026-11-25T11:25:00Z",
+      "pulls": [
+        {
+          "number": 300,
+          "title": "verify retry budget",
+          "url": "https://github.com/mojomast/example/pull/300",
+          "opened_at": "2026-11-25T11:00:00Z",
+          "labels": [
+            "owner:kyle"
+          ],
+          "in_merge_queue": false,
+          "required_checks": [
+            {
+              "name": "ci-gate",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-25T11:20:00Z",
+              "completed_at": "2026-11-25T11:23:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mojomast/rizzstack",
+      "last_merge_at": "2026-11-25T11:30:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/orbitdesktop",
+      "last_merge_at": "2026-11-25T11:10:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/hyvv",
+      "last_merge_at": "2026-11-25T11:15:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/orbit-control-plane",
+      "last_merge_at": "2026-11-25T11:00:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/uirizz",
+      "last_merge_at": "2026-11-25T11:05:00Z",
+      "pulls": []
+    }
+  ],
+  "coordinator": {
+    "heartbeat_at": "2026-11-25T11:50:00Z",
+    "branch": "status/heartbeat",
+    "path": "heartbeat.json"
+  },
+  "next_md": {
+    "ref": "mojomast/rizzstack@main:NEXT.md",
+    "ready_slices": [
+      "B1",
+      "B2",
+      "C1"
+    ]
+  },
+  "deploys": [
+    {
+      "surface": "driver",
+      "path": "/home/kyle/rizzstack/bundlebees",
+      "head": "9cafbe4bd6c1351ffe123b024bd64d27abe74130",
+      "branch": "feat/attach-findings-flag",
+      "dirty": true,
+      "dirty_files": 8,
+      "running_sha": "9cafbe4bd6c1351ffe123b024bd64d27abe74130"
+    },
+    {
+      "surface": "plugin",
+      "path": "/home/kyle/.hermes/plugins/bundlebees",
+      "head": "49dc1411f657b377db77ac6914b392a76042ab9b",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "49dc1411f657b377db77ac6914b392a76042ab9b"
+    },
+    {
+      "surface": "control-plane",
+      "path": "/home/kyle/rizzstack/orbit-control-plane",
+      "head": "7c6b14342d8ab3d5f3894c0bc3954e9bd79563d8",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "7c6b14342d8ab3d5f3894c0bc3954e9bd79563d8"
+    },
+    {
+      "surface": "ingest",
+      "path": "/home/kyle/rizzstack-ingest/bundlebees",
+      "head": "70145e7f83c4f5330a45856a4d91c1a22642b4ac",
+      "branch": null,
+      "dirty": false,
+      "dirty_files": 0,
+      "running_sha": "70145e7f83c4f5330a45856a4d91c1a22642b4ac"
+    }
+  ]
+}

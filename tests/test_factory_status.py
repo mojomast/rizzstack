@@ -1,9 +1,10 @@
 """Contract for the Factory status watchdog (rizzstack wave BC, FACTORY-STATUS).
 
 The watchdog keeps exactly one issue, titled "Factory status", up to date from a
-snapshot of the seven public repos. This file pins the five flags, the all-clear
-body, the deterministic body rendering, the fixture schema and the workflow draft
-that runs the script with the default token.
+snapshot of the seven public repos. This file pins the seven flags (five stall flags
+plus the two deploy-hygiene checks), the all-clear body, the deterministic body
+rendering, the fixture schema and the workflow draft that runs the script with the
+default token.
 
 Fixtures in tests/fixtures/factory-status/ are snapshots of
 `rizzstack.factory-status.snapshot/1`; every age is measured from the snapshot's
@@ -36,6 +37,8 @@ REPOS = [
     "mojomast/uirizz",
 ]
 FLAGS = [
+    "deploy-dir-hygiene",
+    "deploy-sha-drift",
     "failing-required-check",
     "no-merge-with-ready-slices",
     "ownerless-pr",
@@ -105,6 +108,13 @@ def pull(snapshot, repo, number):
                 if item["number"] == number:
                     return item
     raise AssertionError("%s#%s missing from fixture" % (repo, number))
+
+
+def deploy(snapshot, surface):
+    for entry in snapshot["deploys"]:
+        if entry["surface"] == surface:
+            return entry
+    raise AssertionError("%s missing from fixture deploys" % surface)
 
 
 class SnapshotFixtureTests(unittest.TestCase):
@@ -233,6 +243,88 @@ class HeartbeatTests(unittest.TestCase):
         snapshot = load("stale-heartbeat.json")
         snapshot["coordinator"]["heartbeat_at"] = None
         self.assertIn("stale-heartbeat", codes(report_for(snapshot)))
+
+
+class DeployDirHygieneTests(unittest.TestCase):
+    def test_a_deploy_dir_on_a_branch_with_local_edits_is_flagged(self):
+        report = report_for(load("deploy-dir-hygiene.json"))
+        self.assertEqual(["deploy-dir-hygiene"], codes(report))
+        finding = report["findings"][0]
+        self.assertEqual("driver", finding["surface"])
+        self.assertEqual("feat/attach-findings-flag", finding["branch"])
+        self.assertTrue(finding["dirty"])
+        self.assertEqual(8, finding["dirty_files"])
+        self.assertIsNone(finding["age_seconds"])
+
+    def test_a_dirty_detached_deploy_dir_is_flagged_for_the_dirt_alone(self):
+        snapshot = load("deploy-dir-hygiene.json")
+        deploy(snapshot, "driver")["branch"] = None
+        report = report_for(snapshot)
+        self.assertEqual(["deploy-dir-hygiene"], codes(report))
+        finding = report["findings"][0]
+        self.assertIsNone(finding["branch"])
+        self.assertTrue(finding["dirty"])
+
+    def test_a_clean_deploy_dir_on_a_branch_is_flagged_for_the_branch_alone(self):
+        snapshot = load("deploy-dir-hygiene.json")
+        item = deploy(snapshot, "driver")
+        item["dirty"] = False
+        item["dirty_files"] = 0
+        report = report_for(snapshot)
+        self.assertEqual(["deploy-dir-hygiene"], codes(report))
+        finding = report["findings"][0]
+        self.assertFalse(finding["dirty"])
+        self.assertEqual("feat/attach-findings-flag", finding["branch"])
+
+    def test_a_detached_clean_deploy_dir_is_not_flagged(self):
+        self.assertEqual([], report_for(load("all-clear.json"))["findings"])
+
+    def test_the_body_names_the_surface_the_branch_and_the_changed_paths(self):
+        body = body_for(load("deploy-dir-hygiene.json"))
+        self.assertIn("deploy-dir-hygiene", body)
+        self.assertIn("feat/attach-findings-flag", body)
+        self.assertIn("8 changed paths", body)
+        self.assertNotIn("All clear", body)
+
+
+class DeployShaDriftTests(unittest.TestCase):
+    def test_a_running_sha_behind_the_checkout_is_flagged(self):
+        report = report_for(load("deploy-sha-drift.json"))
+        self.assertEqual(["deploy-sha-drift"], codes(report))
+        finding = report["findings"][0]
+        self.assertEqual("control-plane", finding["surface"])
+        self.assertNotEqual(finding["running_sha"], finding["head"])
+
+    def test_a_missing_running_sha_is_drift_not_clear(self):
+        snapshot = load("all-clear.json")
+        deploy(snapshot, "plugin")["running_sha"] = None
+        report = report_for(snapshot)
+        self.assertEqual(["deploy-sha-drift"], codes(report))
+        self.assertIsNone(report["findings"][0]["running_sha"])
+
+    def test_a_running_sha_equal_to_the_checkout_is_not_flagged(self):
+        self.assertEqual([], report_for(load("all-clear.json"))["findings"])
+
+    def test_the_body_shows_the_running_and_checked_out_shas(self):
+        body = body_for(load("deploy-sha-drift.json"))
+        self.assertIn("running ", body)
+        self.assertIn("but checkout ", body)
+
+    def test_the_deploy_table_lists_every_surface(self):
+        body = body_for(load("all-clear.json"))
+        self.assertIn("## Deploy directories", body)
+        for surface in ("driver", "plugin", "control-plane", "ingest"):
+            self.assertIn("| %s |" % surface, body)
+
+
+class SnapshotWithoutDeploysTests(unittest.TestCase):
+    def test_an_older_snapshot_without_deploys_reports_no_deploy_findings(self):
+        snapshot = load("all-clear.json")
+        del snapshot["deploys"]
+        report = report_for(snapshot)
+        self.assertEqual([], report["findings"])
+        self.assertEqual([], report["deploys"])
+        self.assertIn("| none |", body_for(snapshot))
 
 
 class AllClearTests(unittest.TestCase):

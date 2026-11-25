@@ -18,7 +18,12 @@ Snapshot schema (``rizzstack.factory-status.snapshot/1``)::
       ],
       "coordinator": {"heartbeat_at": "<ISO-8601 Z>", "branch": "status/heartbeat",
                       "path": "heartbeat.json"},
-      "next_md": {"ref": "mojomast/rizzstack@main:NEXT.md", "ready_slices": ["B1"]}
+      "next_md": {"ref": "mojomast/rizzstack@main:NEXT.md", "ready_slices": ["B1"]},
+      "deploys": [
+        {"surface": "driver", "path": "/home/<user>/rizzstack/bundlebees",
+         "head": "<40-hex>", "branch": null, "dirty": false, "dirty_files": 0,
+         "running_sha": "<40-hex>" | null}
+      ]
     }
 
 Flags, evaluated against ``captured_at`` (strictly greater than the limit):
@@ -29,7 +34,14 @@ Flags, evaluated against ``captured_at`` (strictly greater than the limit):
 ``ownerless-pr``             PR open > 24h with no ``owner`` / ``owner:<name>`` label
 ``no-merge-with-ready-slices``  no repo merged for > 3h while NEXT.md lists ready slices
 ``stale-heartbeat``          coordinator heartbeat older than 45m (missing counts as stale)
+``deploy-dir-hygiene``       a deploy dir is on a branch (``branch`` not null) or dirty
+``deploy-sha-drift``         ``running_sha`` differs from ``head`` (a missing record drifts)
 ===========================  ==============================================================
+
+The deploy flags are state flags, not age flags: they carry no ``age_seconds`` and are
+reported on every run until the surface is a detached, clean checkout that the running
+process actually loaded. A snapshot with no ``deploys`` key reports no deploy findings,
+so an older collector cannot manufacture drift.
 
 The rendered body is deterministic: findings sort by ``(code, repo, pull)``, ages are
 durations measured from ``captured_at``, and the body carries no absolute timestamp, so
@@ -45,6 +57,8 @@ REPORT_SCHEMA = "rizzstack.factory-status.report/1"
 BODY_MARKER = "<!-- factory-status: v1 -->"
 
 FLAG_CODES = (
+    "deploy-dir-hygiene",
+    "deploy-sha-drift",
     "failing-required-check",
     "no-merge-with-ready-slices",
     "ownerless-pr",
@@ -104,6 +118,13 @@ def _duration(seconds):
     if hours:
         return "%dh%02dm" % (hours, minutes)
     return "%dm" % minutes
+
+
+def _short(sha):
+    """Twelve characters of a commit id, or ``missing`` when no id was recorded."""
+    if not sha:
+        return "missing"
+    return str(sha)[:12]
 
 
 def build_report(snapshot):
@@ -194,14 +215,61 @@ def build_report(snapshot):
             "age_seconds": heartbeat_age,
         })
 
+    deploys = []
+    for deploy in sorted(snapshot.get("deploys", []), key=lambda entry: entry["surface"]):
+        surface = deploy["surface"]
+        head = deploy.get("head")
+        branch = deploy.get("branch")
+        dirty = bool(deploy.get("dirty"))
+        dirty_files = int(deploy.get("dirty_files") or 0)
+        running_sha = deploy.get("running_sha")
+        deploys.append({
+            "surface": surface,
+            "path": deploy.get("path"),
+            "head": head,
+            "branch": branch,
+            "dirty": dirty,
+            "dirty_files": dirty_files,
+            "running_sha": running_sha,
+        })
+        # Deploy dirs are artifacts: a branch or a local edit means the running code
+        # is covered by no PR, no review and no test run.
+        if branch is not None or dirty:
+            findings.append({
+                "code": "deploy-dir-hygiene",
+                "repo": None,
+                "pull": None,
+                "age_seconds": None,
+                "surface": surface,
+                "path": deploy.get("path"),
+                "branch": branch,
+                "dirty": dirty,
+                "dirty_files": dirty_files,
+            })
+        # A checkout that the running process never loaded is not a deploy; a missing
+        # running-SHA record cannot prove the process is current, so it drifts too.
+        if running_sha != head:
+            findings.append({
+                "code": "deploy-sha-drift",
+                "repo": None,
+                "pull": None,
+                "age_seconds": None,
+                "surface": surface,
+                "path": deploy.get("path"),
+                "head": head,
+                "running_sha": running_sha,
+            })
+
     findings.sort(key=lambda item: (
-        item["code"], item["repo"] or "", item["pull"] if item["pull"] is not None else 0
+        item["code"], item["repo"] or "", item["pull"] if item["pull"] is not None else 0,
+        item.get("surface") or "",
     ))
     return {
         "schema": REPORT_SCHEMA,
         "findings": findings,
         "ready_slices": ready_slices,
         "repos": repos,
+        "deploys": deploys,
     }
 
 
@@ -213,7 +281,9 @@ def render_issue_body(report):
         lines.extend(["## Findings", ""])
         for finding in findings:
             code = finding["code"]
-            if finding["repo"] is None:
+            if code.startswith("deploy-"):
+                subject = finding["surface"]
+            elif finding["repo"] is None:
                 subject = "factory"
             else:
                 subject = finding["repo"]
@@ -234,6 +304,23 @@ def render_issue_body(report):
                 detail = "coordinator heartbeat age " + age
             elif code == "ownerless-pr":
                 detail = "open for %s without an owner label" % age
+            elif code == "deploy-dir-hygiene":
+                reasons = []
+                if finding["branch"] is not None:
+                    reasons.append("on branch %s" % finding["branch"])
+                if finding["dirty"]:
+                    count = finding["dirty_files"]
+                    reasons.append("dirty (%d changed path%s)" % (count, "" if count == 1 else "s"))
+                detail = "%s: %s" % (finding["path"], " and ".join(reasons))
+            elif code == "deploy-sha-drift":
+                if finding["running_sha"] is None:
+                    detail = "%s: checkout %s but no running SHA recorded" % (
+                        finding["path"], _short(finding["head"])
+                    )
+                else:
+                    detail = "%s: running %s but checkout %s" % (
+                        finding["path"], _short(finding["running_sha"]), _short(finding["head"])
+                    )
             else:
                 detail = "open for %s with required checks green" % age
             lines.append("- **%s** — %s — %s" % (code, subject, detail))
@@ -253,6 +340,25 @@ def render_issue_body(report):
         lines.append("| %s | %s | %d |" % (
             repo["name"], rendered_age, repo["open_pulls"]
         ))
+
+    lines.extend([
+        "",
+        "## Deploy directories",
+        "",
+        "| Surface | Checkout | Ref | Dirty | Running |",
+        "| --- | --- | --- | ---: | --- |",
+    ])
+    deploys = report.get("deploys", [])
+    if deploys:
+        for deploy in deploys:
+            ref = "detached" if deploy["branch"] is None else deploy["branch"]
+            running = _short(deploy["running_sha"])
+            lines.append("| %s | %s | %s | %d | %s |" % (
+                deploy["surface"], _short(deploy["head"]), ref,
+                deploy["dirty_files"], running,
+            ))
+    else:
+        lines.append("| none | — | — | 0 | — |")
 
     lines.extend(["", "## Ready slices", ""])
     lines.append(", ".join(report["ready_slices"]) if report["ready_slices"] else "None")
