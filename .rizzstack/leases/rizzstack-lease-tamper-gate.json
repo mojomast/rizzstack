@@ -6,7 +6,7 @@
     "assigned_files": [
       ".github/scripts/lease_tamper.py",
       ".github/workflows/gitleaks.yml",
-      ".rizzstack/lease.json"
+      ".rizzstack/leases/rizzstack-lease-tamper-gate.json"
     ],
     "test_files": [],
     "prohibited": []
