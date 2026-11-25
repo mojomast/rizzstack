@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """Factory status watchdog: one issue body from a snapshot of the seven public repos.
 
-RED stub. Only argument parsing, snapshot loading and the report/body seams exist;
-``build_report`` and ``render_issue_body`` raise ``NotImplementedError`` on purpose.
-The behaviour they must provide is pinned by ``tests/test_factory_status.py`` and by
-``contracts/wave-bc/FACTORY-STATUS.contract.json``.
-
 Snapshot schema (``rizzstack.factory-status.snapshot/1``)::
 
     {
@@ -41,6 +36,7 @@ durations measured from ``captured_at``, and the body carries no absolute timest
 a re-run whose facts did not change produces the same bytes.
 """
 import argparse
+from datetime import datetime, timezone
 import json
 import sys
 
@@ -79,19 +75,188 @@ def load_snapshot(path):
     """Read one snapshot file and refuse anything that is not this slice's schema."""
     with open(path, encoding="utf-8") as handle:
         snapshot = json.load(handle)
-    if snapshot.get("schema") != SNAPSHOT_SCHEMA:
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != SNAPSHOT_SCHEMA:
         raise ValueError("%s: expected schema %s" % (path, SNAPSHOT_SCHEMA))
     return snapshot
 
 
+def _parse_timestamp(value):
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds(captured_at, value):
+    timestamp = _parse_timestamp(value)
+    if timestamp is None:
+        return None
+    return int((captured_at - timestamp).total_seconds())
+
+
+def _duration(seconds):
+    if seconds is None:
+        return "unknown"
+    minutes = max(0, seconds) // 60
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return "%dh%02dm" % (hours, minutes)
+    return "%dm" % minutes
+
+
 def build_report(snapshot):
     """Return the report for one snapshot: findings plus the per-repo and NEXT.md rows."""
-    raise NotImplementedError("build_report: implement the five flag rules")
+    captured_at = _parse_timestamp(snapshot["captured_at"])
+    ready_slices = list(snapshot["next_md"]["ready_slices"])
+    findings = []
+    repos = []
+    newest_merge_age = None
+
+    for repo in sorted(snapshot["repos"], key=lambda entry: entry["name"]):
+        repo_name = repo["name"]
+        merge_age = _age_seconds(captured_at, repo.get("last_merge_at"))
+        if merge_age is not None and (newest_merge_age is None or merge_age < newest_merge_age):
+            newest_merge_age = merge_age
+        pulls = sorted(repo.get("pulls", []), key=lambda item: item["number"])
+        repos.append({
+            "name": repo_name,
+            "last_merge_age_seconds": merge_age,
+            "open_pulls": len(pulls),
+        })
+
+        for pull in pulls:
+            number = pull["number"]
+            opened_age = _age_seconds(captured_at, pull["opened_at"])
+            labels = pull.get("labels", [])
+            has_owner = any(
+                label == OWNER_LABEL_PREFIX or label.startswith(OWNER_LABEL_PREFIX + ":")
+                for label in labels
+            )
+            ownerless = opened_age > OWNERLESS_PR_HOURS * 3600 and not has_owner
+            checks = pull.get("required_checks", [])
+
+            failing_checks = []
+            for check in sorted(checks, key=lambda item: item["name"]):
+                check_age = _age_seconds(captured_at, check.get("started_at"))
+                if (
+                    check.get("conclusion") in FAILING_CONCLUSIONS
+                    and check_age is not None
+                    and check_age > FAILING_CHECK_HOURS * 3600
+                ):
+                    failing_checks.append({"name": check["name"], "age_seconds": check_age})
+            if failing_checks:
+                findings.append({
+                    "code": "failing-required-check",
+                    "repo": repo_name,
+                    "pull": number,
+                    "age_seconds": max(check["age_seconds"] for check in failing_checks),
+                    "checks": failing_checks,
+                })
+
+            if ownerless:
+                findings.append({
+                    "code": "ownerless-pr",
+                    "repo": repo_name,
+                    "pull": number,
+                    "age_seconds": opened_age,
+                })
+            elif (
+                opened_age > STALE_GREEN_HOURS * 3600
+                and not pull.get("in_merge_queue", False)
+                and all(check.get("conclusion") == "success" for check in checks)
+            ):
+                findings.append({
+                    "code": "stale-green-pr",
+                    "repo": repo_name,
+                    "pull": number,
+                    "age_seconds": opened_age,
+                })
+
+    if ready_slices and (newest_merge_age is None or newest_merge_age > NO_MERGE_HOURS * 3600):
+        findings.append({
+            "code": "no-merge-with-ready-slices",
+            "repo": None,
+            "pull": None,
+            "age_seconds": newest_merge_age,
+            "ready_slices": list(ready_slices),
+        })
+
+    heartbeat_age = _age_seconds(
+        captured_at, snapshot.get("coordinator", {}).get("heartbeat_at")
+    )
+    if heartbeat_age is None or heartbeat_age > HEARTBEAT_STALE_MINUTES * 60:
+        findings.append({
+            "code": "stale-heartbeat",
+            "repo": None,
+            "pull": None,
+            "age_seconds": heartbeat_age,
+        })
+
+    findings.sort(key=lambda item: (
+        item["code"], item["repo"] or "", item["pull"] if item["pull"] is not None else 0
+    ))
+    return {
+        "schema": REPORT_SCHEMA,
+        "findings": findings,
+        "ready_slices": ready_slices,
+        "repos": repos,
+    }
 
 
 def render_issue_body(report):
     """Return the Markdown issue body for a report, with no absolute timestamps."""
-    raise NotImplementedError("render_issue_body: implement the deterministic body")
+    lines = [BODY_MARKER, "# Factory status", ""]
+    findings = report["findings"]
+    if findings:
+        lines.extend(["## Findings", ""])
+        for finding in findings:
+            code = finding["code"]
+            if finding["repo"] is None:
+                subject = "factory"
+            else:
+                subject = finding["repo"]
+                if finding["pull"] is not None:
+                    subject += "#%s" % finding["pull"]
+            age = _duration(finding.get("age_seconds"))
+            if code == "failing-required-check":
+                checks = ", ".join(
+                    "%s (%s)" % (check["name"], _duration(check["age_seconds"]))
+                    for check in finding["checks"]
+                )
+                detail = "required checks failing: " + checks
+            elif code == "no-merge-with-ready-slices":
+                detail = "latest merge age %s; ready slices: %s" % (
+                    age, ", ".join(finding["ready_slices"])
+                )
+            elif code == "stale-heartbeat":
+                detail = "coordinator heartbeat age " + age
+            elif code == "ownerless-pr":
+                detail = "open for %s without an owner label" % age
+            else:
+                detail = "open for %s with required checks green" % age
+            lines.append("- **%s** — %s — %s" % (code, subject, detail))
+        lines.append("")
+    else:
+        lines.extend(["All clear.", ""])
+
+    lines.extend([
+        "## Repositories",
+        "",
+        "| Repo | Last merge age | Open PRs |",
+        "| --- | ---: | ---: |",
+    ])
+    for repo in sorted(report["repos"], key=lambda entry: entry["name"]):
+        merge_age = repo["last_merge_age_seconds"]
+        rendered_age = "never" if merge_age is None else _duration(merge_age)
+        lines.append("| %s | %s | %d |" % (
+            repo["name"], rendered_age, repo["open_pulls"]
+        ))
+
+    lines.extend(["", "## Ready slices", ""])
+    lines.append(", ".join(report["ready_slices"]) if report["ready_slices"] else "None")
+    return "\n".join(lines) + "\n"
 
 
 def build_parser():
