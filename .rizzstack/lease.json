@@ -1,0 +1,14 @@
+{
+  "id": "rizzstack-lease-tamper-gate",
+  "lease_version": "rizzstack.lease/1",
+  "source_rev": "f996ae82ce646b98699225b2b463ac60c6b47f6e",
+  "scope": {
+    "assigned_files": [
+      ".github/scripts/lease_tamper.py",
+      ".github/workflows/gitleaks.yml",
+      ".rizzstack/lease.json"
+    ],
+    "test_files": [],
+    "prohibited": []
+  }
+}
