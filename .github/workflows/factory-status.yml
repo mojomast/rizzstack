@@ -1,0 +1,56 @@
+name: factory-status
+
+# The stall watchdog: one issue, rewritten in place every 30 minutes.
+#
+# It reads seven public repositories with the default token (contents: read) and
+# rewrites a single issue titled "Factory status" (issues: write). That issues
+# write is the only write scope in this repository's workflows; the hygiene
+# contract in tests/test_ci_workflows.py allow-lists exactly this file and scope.
+#
+# Flags, thresholds and the body format are pinned by tests/test_factory_status.py
+# and contracts/wave-bc/FACTORY-STATUS.contract.json. Read-only apart from the issue.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    name: factory-status
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Watchdog unit tests
+        run: python3 -m unittest discover -s tests -p 'test_factory_status.py' -v
+      - name: Rewrite the Factory status issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/factory_status.py \
+            --repos \
+              mojomast/workflow \
+              mojomast/bundlebees \
+              mojomast/rizzstack \
+              mojomast/orbitdesktop \
+              mojomast/hyvv \
+              mojomast/orbit-control-plane \
+              mojomast/uirizz \
+            --issue-title 'Factory status'

@@ -1,0 +1,113 @@
+{
+  "schema": "rizzstack.factory-status.snapshot/1",
+  "captured_at": "2026-11-25T12:00:00Z",
+  "repos": [
+    {
+      "name": "mojomast/workflow",
+      "last_merge_at": "2026-11-25T11:20:00Z",
+      "pulls": [
+        {
+          "number": 147,
+          "title": "wave B queue state",
+          "url": "https://github.com/mojomast/example/pull/147",
+          "opened_at": "2026-11-25T08:50:00Z",
+          "labels": [
+            "slice",
+            "owner:kyle"
+          ],
+          "in_merge_queue": false,
+          "required_checks": [
+            {
+              "name": "ci-gate",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-25T08:55:00Z",
+              "completed_at": "2026-11-25T08:58:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mojomast/bundlebees",
+      "last_merge_at": "2026-11-25T11:25:00Z",
+      "pulls": [
+        {
+          "number": 300,
+          "title": "verify retry budget",
+          "url": "https://github.com/mojomast/example/pull/300",
+          "opened_at": "2026-11-25T10:00:00Z",
+          "labels": [
+            "owner:kyle"
+          ],
+          "in_merge_queue": false,
+          "required_checks": [
+            {
+              "name": "ci-gate",
+              "status": "completed",
+              "conclusion": "failure",
+              "started_at": "2026-11-25T10:20:00Z",
+              "completed_at": "2026-11-25T10:23:00Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mojomast/rizzstack",
+      "last_merge_at": "2026-11-25T11:30:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/orbitdesktop",
+      "last_merge_at": "2026-11-25T11:10:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/hyvv",
+      "last_merge_at": "2026-11-25T11:15:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/orbit-control-plane",
+      "last_merge_at": "2026-11-25T11:00:00Z",
+      "pulls": []
+    },
+    {
+      "name": "mojomast/uirizz",
+      "last_merge_at": "2026-11-25T11:05:00Z",
+      "pulls": [
+        {
+          "number": 35,
+          "title": "catalog token budget",
+          "url": "https://github.com/mojomast/example/pull/35",
+          "opened_at": "2026-11-24T10:00:00Z",
+          "labels": [
+            "slice"
+          ],
+          "in_merge_queue": false,
+          "required_checks": [
+            {
+              "name": "test",
+              "status": "completed",
+              "conclusion": "success",
+              "started_at": "2026-11-25T11:35:00Z",
+              "completed_at": "2026-11-25T11:38:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "coordinator": {
+    "heartbeat_at": "2026-11-25T11:50:00Z",
+    "branch": "status/heartbeat",
+    "path": "heartbeat.json"
+  },
+  "next_md": {
+    "ref": "mojomast/rizzstack@main:NEXT.md",
+    "ready_slices": [
+      "B2"
+    ]
+  }
+}

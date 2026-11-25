@@ -3,11 +3,16 @@
 - a gitleaks job scans full history on every pull request and push to main;
 - every action is pinned to a full commit SHA;
 - every checkout sets persist-credentials: false;
-- workflow token permissions are read-only.
+- workflow token permissions are read-only, except the one allow-listed
+  `issues: write` the Factory status watchdog needs to rewrite its single issue.
 """
 import re
 import unittest
 from pathlib import Path
+
+# The one workflow allowed a write scope, and the only scope it may have.
+# Widening this map is a reviewed change: every other workflow stays read-only.
+WRITE_EXEMPT = {"factory-status.yml": {"issues"}}
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -82,7 +87,14 @@ class WorkflowHygieneTests(unittest.TestCase):
             m = re.search(r"(?m)^permissions:\s*\n((?:[ \t]+.*\n)+)", t)
             self.assertIsNotNone(m, "%s: top-level permissions block required" % wf.name)
             self.assertIn("contents: read", m.group(1))
-            self.assertNotRegex(t, r"(?m)^\s+[a-z-]+:\s*write\s*$", wf.name)
+            writes = re.findall(r"(?m)^\s+([a-z-]+):\s*write\s*$", t)
+            allowed = WRITE_EXEMPT.get(wf.name, set())
+            self.assertEqual(sorted(allowed), sorted(writes), "%s: write scopes" % wf.name)
+            self.assertNotIn("contents: write", t, wf.name)
+
+    def test_only_the_watchdog_may_hold_a_write_scope(self):
+        self.assertEqual({"factory-status.yml": {"issues"}}, WRITE_EXEMPT)
+        self.assertTrue((WORKFLOWS / "factory-status.yml").is_file())
 
 
 if __name__ == "__main__":
