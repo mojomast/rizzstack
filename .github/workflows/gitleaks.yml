@@ -9,6 +9,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled`/`unlabeled` re-evaluate the owner-held hold: adding the label
+    # fails the required ci-gate check, removing it lets the pull request pass.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # Merge-queue candidates run the same required checks; the owner-held job
+  # resolves the queued pull request from the merge group head SHA.
+  merge_group:
 
 permissions:
   contents: read
@@ -55,6 +61,27 @@ jobs:
           curl -fsSL --retry 3 "https://raw.githubusercontent.com/mojomast/bundlebees/${tag}/bundlebees_plugin/pins.py" -o "$RUNNER_TEMP/pins.py"
           python3 scripts/compat.py check-pins "$RUNNER_TEMP/pins.py"
 
+  owner-held:
+    name: owner-held
+    # Enforced through ci-gate, the single required check, so no ruleset change
+    # is needed: a pull request labelled `owner-held` fails this job and ci-gate
+    # (which needs it) cannot pass.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report labels and enforce the owner-held hold
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: python3 .github/scripts/owner_held.py "$GITHUB_EVENT_PATH"
+
   ci-gate:
     name: ci-gate
     # The main ruleset requires this one check. It passes only when every job
@@ -63,6 +90,7 @@ jobs:
     needs:
       - secret-scan
       - workflow-hygiene
+      - owner-held
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
