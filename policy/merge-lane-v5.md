@@ -37,7 +37,8 @@ or the required checks. Every input is measured by the lane:
 | compare entries for blob equality | `GET .../compare/{record_sha}...{head}` |
 | slice/non-slice class | the **trusted gate's own stdout**: `lease-tamper: class=slice` / `class=non-slice` |
 | lease/tamper verdict | the lane runs `.github/scripts/lease_tamper.py` from `origin/main` itself |
-| verify records | `~/.hermes/plugin-data/bundlebees/verify-results/*.json` (trusted local state) |
+| verify records | `~/.hermes/plugin-data/bundlebees/verify-results/*.json` (trusted local state), each bound to `repo`/`slice`/`contract_sha256` |
+| slice provenance (repo, slice id, contract sha256) | `.rizzstack/leases/*.json` at `origin/main`, first frozen lease naming the PR (the gate's own rule) |
 | owner-held | the PR's `owner-held` label and the campaign plan's `owner_held.prs` list |
 | required checks | `policy/rulesets/<repo>.json` at `origin/main`, read with `git show` (never the worktree; `ci-gate` fallback) |
 
@@ -127,12 +128,33 @@ skipped gate proves nothing about the change.
 
 ## Verify (slices only)
 
-An `ok` record at the exact head, or an ancestor record with no changed file in
-common with the PR's file list. A record at the exact head that is not `ok` is
-`verify_failed_at_head` and is not rescued by an older blob match. The compare
-entry must carry the `files` key: explicit `null` means identical trees; a
-missing key, a non-string member, or a 300-entry (truncated) list is
-`verify_blob_check_inconclusive` unless another candidate proves equality.
+A verify record is evidence only for the slice and contract it was written for.
+It must carry `repo` (the `owner/name` slug), `slice` (the slice id) and
+`contract_sha256`, and all three must equal the frozen base-store lease
+(`.rizzstack/leases/*.json` at `origin/main`) that the lease/tamper gate used to
+classify the pull request. A record from another repository or another slice is
+refused at a blob-equal sha (`verify_provenance_mismatch`), and a slice with no
+frozen base lease to bind to fails closed (`verify_provenance_missing`). A
+record without provenance — every pre-provenance record — is not evidence for
+any pull request.
+
+Within those records: an `ok` record at the exact head, or an ancestor record
+with no changed file in common with the PR's file list. A record at the exact
+head that is not `ok` is `verify_failed_at_head` and is not rescued by an older
+blob match. The compare entry must carry the `files` key: explicit `null` means
+identical trees; a missing key, a non-string member, or a 300-entry (truncated)
+list is `verify_blob_check_inconclusive` unless another candidate proves
+equality.
+
+## Local state is pinned, not configurable
+
+The verify store (`~/.hermes/plugin-data/bundlebees/verify-results`), the
+campaign plan (`~/.hermes/plugin-data/bundlebees/campaigns/feature-batch-1/plan.json`)
+and the base lease store are constants, like the gate script's `origin/main`
+ref. There is no `--verify-dir`, `--plan` or environment override in the CLI: an
+operator-supplied path could point the lane at a record or a hold list the merge
+machinery does not own. Tests inject both stores through `collect_facts`'s
+function parameters, never through the command line.
 
 ## Owner review for gate/lane changes
 
@@ -241,8 +263,11 @@ never runs the gate.
 `lease_tamper_not_run`, `lease_tamper_failed`, `gate_ref_not_pinned`,
 `gate_ref_unresolved`, `gate_fetch_failed`, `gate_script_unavailable`,
 `gate_base_unresolved`, `gate_timeout`, `gate_run_failed`,
-`owner_review_missing`, `verify_evidence_missing`, `verify_failed_at_head`,
-`verify_at_older_head`, `verify_blob_check_inconclusive`, `merge_failed`,
+`owner_review_missing`, `verify_evidence_missing`,
+`verify_provenance_missing`, `verify_provenance_mismatch`,
+`lease_provenance_missing`, `lease_provenance_invalid`,
+`verify_failed_at_head`, `verify_at_older_head`,
+`verify_blob_check_inconclusive`, `merge_failed`,
 `merge_unverified`, `reviewed`.
 
 ## Rollout

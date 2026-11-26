@@ -30,6 +30,16 @@ HEAD = "a" * 40
 OLDER = "b" * 40
 BASE = "c" * 40
 
+#: The provenance a slice verify record must carry: the frozen base lease's
+#: repo slug, slice id and contract sha256.
+PROVENANCE = {
+    "repo": "mojomast/workflow",
+    "pr": 7,
+    "slice": "wave-b-b3",
+    "contract_sha256": "e" * 64,
+    "lease": ".rizzstack/leases/wave-b-b3.json",
+}
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 #: sha256 of the shared policy block and the shared fixtures.  The lease/tamper
@@ -102,7 +112,7 @@ def facts(**overrides):
             {"name": "gitleaks", "status": "completed", "conclusion": "success", "head": HEAD},
         ],
         "required_checks": ["ci-gate"],
-        "verify": {"records": [], "compare": {}},
+        "verify": {"records": [], "compare": {}, "provenance": dict(PROVENANCE)},
         "lease_tamper": gate_record(),
         "owner_held": False,
     }
@@ -114,8 +124,17 @@ def facts(**overrides):
     return value
 
 
-def verify(sha=HEAD, ok=True, record="verify-results/landed.json"):
-    return {"record": record, "sha": sha, "ok": ok}
+def verify(sha=HEAD, ok=True, record="verify-results/landed.json", **provenance):
+    value = {
+        "record": record,
+        "sha": sha,
+        "ok": ok,
+        "repo": PROVENANCE["repo"],
+        "slice": PROVENANCE["slice"],
+        "contract_sha256": PROVENANCE["contract_sha256"],
+    }
+    value.update(provenance)
+    return value
 
 
 def carry(sha=OLDER, head=HEAD, ok=True, reason=None):
@@ -256,7 +275,7 @@ class ReviewCarryForwardTests(unittest.TestCase):
     def test_a_carried_review_still_needs_the_slice_verify_record(self):
         value = facts(reviews=[approve(OLDER)], review_carry=carry(OLDER))
         value["class"] = lane.SLICE
-        value["verify"] = {"records": [], "compare": {}}
+        value["verify"] = {"records": [], "compare": {}, "provenance": dict(PROVENANCE)}
         self.assertEqual(lane.decide(value)["reason"], "verify_evidence_missing")
 
     def test_a_carried_owner_review_satisfies_the_extra_gate(self):
@@ -291,7 +310,7 @@ class SliceTests(unittest.TestCase):
     def test_slice_with_exact_verify_and_review_merges(self):
         value = facts()
         value["class"] = lane.SLICE
-        value["verify"] = {"records": [verify()], "compare": {}}
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
         verdict = lane.decide(value)
         self.assertTrue(verdict["merge"], verdict)
         self.assertEqual(verdict["verify"], "exact")
@@ -300,6 +319,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER)],
             "compare": {OLDER: {"status": "ahead", "files": ["CHANGELOG.md"]}},
         }
@@ -311,6 +331,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER)],
             "compare": {OLDER: {"status": "ahead", "files": ["tests/test_example.py"]}},
         }
@@ -322,6 +343,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER)],
             "compare": {OLDER: {"status": "ahead", "files": ["f%d" % n for n in range(300)]}},
         }
@@ -332,7 +354,7 @@ class SliceTests(unittest.TestCase):
     def test_slice_verify_record_not_ok_at_head_fails_closed(self):
         value = facts()
         value["class"] = lane.SLICE
-        value["verify"] = {"records": [verify(ok=False)], "compare": {}}
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify(ok=False)], "compare": {}}
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "verify_failed_at_head")
@@ -341,6 +363,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(HEAD, ok=False, record="verify-results/att_head.json"),
                         verify(OLDER)],
             "compare": {OLDER: {"status": "ahead", "files": ["CHANGELOG.md"]}},
@@ -353,6 +376,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER), verify("c" * 40)],
             "compare": {
                 OLDER: {"status": "ahead", "files": ["f%d" % n for n in range(300)]},
@@ -366,7 +390,7 @@ class SliceTests(unittest.TestCase):
     def test_slice_exact_verify_with_review_at_an_older_head_without_carry_refuses(self):
         value = facts()
         value["class"] = lane.SLICE
-        value["verify"] = {"records": [verify()], "compare": {}}
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
         value["reviews"] = [approve(OLDER)]
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
@@ -376,6 +400,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER)],
             "compare": {OLDER: {"status": "identical", "files": None}},
         }
@@ -387,6 +412,7 @@ class SliceTests(unittest.TestCase):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {
+            "provenance": dict(PROVENANCE),
             "records": [verify(OLDER)],
             "compare": {OLDER: {"status": "ahead"}},
         }
@@ -397,10 +423,90 @@ class SliceTests(unittest.TestCase):
     def test_slice_still_needs_the_review(self):
         value = facts(reviews=[])
         value["class"] = lane.SLICE
-        value["verify"] = {"records": [verify()], "compare": {}}
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "review_missing")
+
+    def test_a_valid_record_from_another_repo_at_a_blob_equal_sha_is_refused(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(OLDER, repo="mojomast/bundlebees")],
+            "compare": {OLDER: {"status": "ahead", "files": ["CHANGELOG.md"]}},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
+
+    def test_a_valid_record_from_another_slice_at_a_blob_equal_sha_is_refused(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(OLDER, slice="wave-c-c3")],
+            "compare": {OLDER: {"status": "ahead", "files": ["CHANGELOG.md"]}},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
+
+    def test_a_record_for_another_contract_of_the_same_slice_is_refused(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(HEAD, contract_sha256="f" * 64)],
+            "compare": {},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
+
+    def test_a_record_without_provenance_is_not_evidence(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [{"record": "verify-results/att_legacy.json", "sha": HEAD, "ok": True}],
+            "compare": {},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
+
+    def test_a_slice_without_a_base_lease_provenance_fails_closed(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {"records": [verify()], "compare": {}, "provenance": None}
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_missing")
+
+    def test_a_foreign_failed_record_at_the_head_does_not_fail_this_slice(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(HEAD, ok=False, repo="mojomast/uirizz"), verify()],
+            "compare": {},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["verify"], "exact")
+
+    def test_a_record_naming_another_pr_is_refused(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(HEAD, pr=99)],
+            "compare": {},
+            "provenance": dict(PROVENANCE),
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
 
 
 class GateTests(unittest.TestCase):
@@ -619,7 +725,8 @@ class SensitivePathOwnerReviewTests(unittest.TestCase):
                           reviews=[approve(), owner_approve()])
             value["class"] = pull_class
             if pull_class == lane.SLICE:
-                value["verify"] = {"records": [verify()], "compare": {}}
+                value["verify"] = {"records": [verify()], "compare": {},
+                                   "provenance": dict(PROVENANCE)}
             verdict = lane.decide(value)
             self.assertTrue(verdict["merge"], verdict)
             self.assertEqual(verdict["sensitive_files"], [".rizzstack/contracts/c.json"])
@@ -936,6 +1043,30 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("unrecognized arguments", proc.stderr)
 
+    def test_cli_has_no_verify_dir_option(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo),
+             "--verify-dir", "/tmp/records"],
+            input=json.dumps(facts()),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("unrecognized arguments", proc.stderr)
+
+    def test_cli_has_no_plan_option(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo),
+             "--plan", "/tmp/plan.json"],
+            input=json.dumps(facts()),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("unrecognized arguments", proc.stderr)
+
+    def test_no_environment_can_point_the_lane_at_another_store(self):
+        """Both local stores are pinned: only function parameters inject them."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("BUNDLEBEES_VERIFY_DIR", source)
+        self.assertNotIn("BUNDLEBEES_PLAN", source)
+
     def test_a_facts_file_may_never_merge(self):
         proc = self._run(facts(), extra=("--merge",))
         self.assertEqual(proc.returncode, 1, proc.stderr)
@@ -1198,7 +1329,14 @@ class FetchFactsTests(unittest.TestCase):
         self.verify_dir = Path(self.tmp.name) / "verify-results"
         self.verify_dir.mkdir()
         (self.verify_dir / ("landed-%s.json" % OLDER)).write_text(
-            json.dumps({"sha": OLDER, "ok": True}), encoding="utf-8")
+            json.dumps({
+                "sha": OLDER,
+                "ok": True,
+                "repo": "mojomast/workflow",
+                "slice": "wave-b-b3",
+                "contract_sha256": "e" * 64,
+                "pr": 7,
+            }), encoding="utf-8")
         self.plan = Path(self.tmp.name) / "plan.json"
         self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
 
@@ -1210,11 +1348,95 @@ class FetchFactsTests(unittest.TestCase):
             "ran": True, "ok": True, "reason": "gate_ok", "head": HEAD,
             "output_tail": "lease-tamper: class=non-slice\n",
         })
+        repo = overrides.pop("repo_path", ".")
         return lane.collect_facts(
-            "mojomast/workflow", 7, ".", "test-token",
+            "mojomast/workflow", 7, repo, "test-token",
             api_url="https://api.test", http=self.api, gate_record=gate,
             verify_dir=self.verify_dir, plan_path=self.plan,
             required_checks=("ci-gate",), **overrides)
+
+    def _lease_repo(self, docs):
+        """A checkout whose ``origin/main`` carries the given base leases."""
+        repo = Path(self.tmp.name) / "lease-repo"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.invalid"],
+                       check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "test"], check=True)
+        for name, doc in docs.items():
+            path = repo / ".rizzstack" / "leases" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "leases"], check=True)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", sha],
+                       check=True)
+        return repo
+
+    @staticmethod
+    def _lease(**overrides):
+        doc = {
+            "id": "wave-b-b3",
+            "slice": "wave-b-b3",
+            "pull_request": 7,
+            "branch": "feat/x",
+            "contract_sha256": "e" * 64,
+            "review": {"status": "frozen", "approved_by": "owner"},
+        }
+        doc.update(overrides)
+        return doc
+
+    def test_a_slice_reads_its_provenance_from_the_frozen_base_lease(self):
+        repo = self._lease_repo({"wave-b-b3.json": self._lease()})
+        facts = self.collect(repo_path=str(repo), gate={
+            "ran": True, "ok": True, "reason": "gate_ok",
+            "output_tail": "lease-tamper: class=slice\n",
+        })
+        provenance = facts["verify"]["provenance"]
+        self.assertEqual(provenance["repo"], "mojomast/workflow")
+        self.assertEqual(provenance["slice"], "wave-b-b3")
+        self.assertEqual(provenance["contract_sha256"], "e" * 64)
+        self.assertEqual(provenance["lease"], ".rizzstack/leases/wave-b-b3.json")
+        facts["review_carry"] = carry(OLDER)
+        verdict = lane.decide(facts)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["verify"], "blob")
+
+    def test_a_lease_from_another_pr_does_not_provide_provenance(self):
+        repo = self._lease_repo({"wave-b-b3.json": self._lease(pull_request=8, branch="feat/y")})
+        facts = self.collect(repo_path=str(repo), gate={
+            "ran": True, "ok": True, "reason": "gate_ok",
+            "output_tail": "lease-tamper: class=slice\n",
+        })
+        self.assertIsNone(facts["verify"]["provenance"])
+        self.assertEqual(facts["verify"]["provenance_reason"], "lease_provenance_missing")
+        facts["review_carry"] = carry(OLDER)
+        self.assertEqual(lane.decide(facts)["reason"], "verify_provenance_missing")
+
+    def test_an_unfrozen_lease_is_not_provenance(self):
+        repo = self._lease_repo({"wave-b-b3.json": self._lease(review={"status": "draft"})})
+        self.assertIsNone(self.collect(repo_path=str(repo), gate={
+            "ran": True, "ok": True, "reason": "gate_ok",
+            "output_tail": "lease-tamper: class=slice\n",
+        })["verify"]["provenance"])
+
+    def test_a_record_from_another_repo_is_refused_even_at_a_blob_equal_sha(self):
+        repo = self._lease_repo({"wave-b-b3.json": self._lease()})
+        (self.verify_dir / ("landed-%s.json" % OLDER)).write_text(
+            json.dumps({
+                "sha": OLDER, "ok": True, "repo": "mojomast/bundlebees",
+                "slice": "wave-b-b3", "contract_sha256": "e" * 64, "pr": 7,
+            }), encoding="utf-8")
+        facts = self.collect(repo_path=str(repo), gate={
+            "ran": True, "ok": True, "reason": "gate_ok",
+            "output_tail": "lease-tamper: class=slice\n",
+        })
+        facts["review_carry"] = carry(OLDER)
+        verdict = lane.decide(facts)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_provenance_mismatch")
 
     def test_collects_the_pull_request_state_reviews_and_checks(self):
         facts = self.collect()
@@ -1257,7 +1479,9 @@ class FetchFactsTests(unittest.TestCase):
         facts = self.collect()
         self.assertEqual(facts["verify"]["records"],
                          [{"record": str(self.verify_dir / ("landed-%s.json" % OLDER)),
-                           "sha": OLDER, "ok": True}])
+                           "sha": OLDER, "ok": True,
+                           "repo": "mojomast/workflow", "slice": "wave-b-b3",
+                           "contract_sha256": "e" * 64, "pr": 7}])
         self.assertEqual(facts["verify"]["compare"][OLDER],
                          {"status": "ahead", "files": ["CHANGELOG.md"]})
 
@@ -1265,7 +1489,9 @@ class FetchFactsTests(unittest.TestCase):
         self.api.compares = {OLDER: {"status": "ahead"}}
         facts = self.collect()
         self.assertNotIn("files", facts["verify"]["compare"][OLDER])
-        verdict = lane.decide({**facts, "class": lane.SLICE, "review_carry": carry(OLDER)})
+        facts.update({"class": lane.SLICE, "review_carry": carry(OLDER),
+                      "verify": {**facts["verify"], "provenance": dict(PROVENANCE)}})
+        verdict = lane.decide(facts)
         self.assertEqual(verdict["reason"], "verify_blob_check_inconclusive")
 
     def test_owner_held_label_is_read_from_the_pull_request(self):

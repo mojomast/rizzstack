@@ -84,6 +84,19 @@ DEFAULT_VERIFY_DIR = "~/.hermes/plugin-data/bundlebees/verify-results"
 DEFAULT_PLAN_PATH = "~/.hermes/plugin-data/bundlebees/campaigns/feature-batch-1/plan.json"
 MERGE_LANE_ENV = "BUNDLEBEES_MERGE_LANE"
 
+#: Base-store lease identity.  A slice verify record is bound to the frozen
+#: lease on the base branch that classified the pull request: the record's
+#: ``repo``/``slice``/``contract_sha256`` must equal that lease's, read from
+#: the trusted base revision only.  Both the lease store and its revision are
+#: pinned like the gate script; neither is configurable from the command line.
+LEASE_STORE_DIR = ".rizzstack/leases"
+LEASE_REF = GATE_SCRIPT_REF
+LEASE_PR_NAME_KEYS = ("pull_request", "pull_requests", "pr", "prs")
+LEASE_BRANCH_NAME_KEYS = ("branch", "branches")
+LEASE_SLICE_NAME_KEYS = ("slice", "slice_name", "id")
+LEASE_FROZEN_STATUSES = ("approved", "frozen")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
 SHA = re.compile(r"^[0-9a-f]{40}$")
 STAMP_LINE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
@@ -899,6 +912,120 @@ def class_from_gate(record):
     return None
 
 
+def _name_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _leaf_branch(branch):
+    value = _text(branch).strip()
+    return value.rsplit("/", 1)[-1] if value else ""
+
+
+def _lease_is_frozen(doc):
+    """A base-store lease is usable only when it says it is frozen, with an approver."""
+    review = doc.get("review") if isinstance(doc, dict) else None
+    if not isinstance(review, dict):
+        return False
+    status = _text(review.get("status")).strip().lower()
+    if status not in LEASE_FROZEN_STATUSES:
+        return False
+    return bool(_text(review.get("approved_by")).strip())
+
+
+def _lease_names_target(doc, number, branch):
+    """True when a lease names this pull request, its branch or its slice.
+
+    This mirrors the gate's own naming rule: only an explicit field counts, and
+    the shape of the branch name never does.
+    """
+    if not isinstance(doc, dict):
+        return False
+    branch = _text(branch).strip()
+    leaf = _leaf_branch(branch)
+    for key in LEASE_PR_NAME_KEYS:
+        for item in _name_list(doc.get(key)):
+            if isinstance(item, bool):
+                continue
+            if isinstance(item, int) and number is not None and item == number:
+                return True
+            if isinstance(item, str):
+                text = item.strip().lstrip("#")
+                if text.isdigit() and number is not None and int(text) == number:
+                    return True
+    for key in LEASE_BRANCH_NAME_KEYS:
+        for item in _name_list(doc.get(key)):
+            if isinstance(item, str) and branch and item.strip() == branch:
+                return True
+    for key in LEASE_SLICE_NAME_KEYS:
+        value = doc.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        name = value.strip().lower()
+        if branch and name == branch.lower():
+            return True
+        if leaf and name == leaf.lower():
+            return True
+    return False
+
+
+def _lease_paths(repo, revision):
+    proc = _git(repo, "ls-tree", "-r", "--name-only", revision, "--", LEASE_STORE_DIR)
+    if proc.returncode != 0:
+        return []
+    return [
+        line.strip()
+        for line in (proc.stdout or "").splitlines()
+        if line.strip().endswith(".json")
+    ]
+
+
+def _lease_at(repo, revision, path):
+    proc = _git(repo, "show", "%s:%s" % (revision, path))
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return None
+
+
+def base_lease_provenance(repo, repo_slug, number, branch, revision=LEASE_REF):
+    """``(provenance, reason)`` for the frozen base lease that names this PR.
+
+    The first frozen lease that names the pull request wins, exactly as in the
+    gate's own ``_named_lease_at``, so the lane and the gate cannot disagree
+    about which lease classified the pull request.  Only ``revision`` (the
+    pinned base ref) is read; a lease written on the pull request's own head is
+    never provenance.  Fail-closed: a matching lease without a slice id or a
+    64-hex ``contract_sha256`` is invalid, not "unknown".
+    """
+    provenance = {
+        "repo": _text(repo_slug).strip().lower(),
+        "pr": int(number) if number else None,
+    }
+    if not provenance["repo"] or provenance["pr"] is None:
+        return None, "lease_provenance_invalid"
+    for path in _lease_paths(repo, revision):
+        doc = _lease_at(repo, revision, path)
+        if not isinstance(doc, dict) or not _lease_is_frozen(doc):
+            continue
+        if not _lease_names_target(doc, provenance["pr"], branch):
+            continue
+        slice_id = _text(doc.get("slice") or doc.get("slice_name") or doc.get("id")).strip()
+        contract = _text(doc.get("contract_sha256")).strip().lower()
+        if not slice_id or not SHA256.fullmatch(contract):
+            return None, "lease_provenance_invalid"
+        provenance["slice"] = slice_id
+        provenance["contract_sha256"] = contract
+        provenance["lease"] = path
+        return provenance, "lease_provenance_ok"
+    return None, "lease_provenance_missing"
+
+
 def _check_stamp(check):
     for key in ("completed_at", "completedAt", "started_at", "startedAt"):
         value = check.get(key)
@@ -985,21 +1112,61 @@ def checks_state(checks, head, required_checks):
     return True, "checks_green"
 
 
-def verify_at_head(records, compare, head, files):
+def record_provenance_matches(record, provenance):
+    """True when a verify record was written for exactly this slice/contract.
+
+    Every field is required: a record without provenance is not evidence for
+    any pull request, and one written for another repository, another slice or
+    another contract is refused even when its blob-equal sha would otherwise
+    qualify.
+    """
+    if not isinstance(record, dict) or not isinstance(provenance, dict):
+        return False
+    repo = _text(record.get("repo")).strip().lower()
+    slice_id = _text(record.get("slice")).strip().lower()
+    contract = _text(record.get("contract_sha256")).strip().lower()
+    if not repo or not slice_id or not contract:
+        return False
+    if repo != _text(provenance.get("repo")).strip().lower():
+        return False
+    if slice_id != _text(provenance.get("slice")).strip().lower():
+        return False
+    if contract != _text(provenance.get("contract_sha256")).strip().lower():
+        return False
+    number = record.get("pr")
+    if number is not None:
+        wanted = provenance.get("pr")
+        try:
+            if wanted is None or int(number) != int(wanted):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def verify_at_head(records, compare, head, files, provenance=None):
     """``(ok, reason, match)`` for verify evidence at ``head``.
 
-    Exact equality is preferred.  A record at the exact head that is not ``ok``
-    fails closed: a head the verifier rejected is not rescued by an older
-    record.  Otherwise an ``ok`` record at an ancestor sha passes only with
-    blob equality on every file the PR changes: the compare's changed-file
-    list must not intersect the PR file list.  ``files: null`` means the trees
-    are identical; a 300-entry (truncated) compare is inconclusive, and a
-    later candidate that proves equality still wins over it.
+    Only records whose ``repo``/``slice``/``contract_sha256`` equal the frozen
+    base lease that classified the pull request are evidence at all: a valid
+    record from another repository or another slice is refused even at a
+    blob-equal sha.  Exact equality is preferred.  A record at the exact head
+    that is not ``ok`` fails closed: a head the verifier rejected is not
+    rescued by an older record.  Otherwise an ``ok`` record at an ancestor sha
+    passes only with blob equality on every file the PR changes: the compare's
+    changed-file list must not intersect the PR file list.  ``files: null``
+    means the trees are identical; a 300-entry (truncated) compare is
+    inconclusive, and a later candidate that proves equality still wins over it.
     """
+    if not isinstance(provenance, dict) or not _text(provenance.get("slice")).strip():
+        return False, "verify_provenance_missing", None
     wanted = _sha(head)
     if not isinstance(records, (list, tuple)):
         return False, "verify_evidence_missing", None
-    records = [r for r in records if isinstance(r, dict)]
+    seen = [r for r in records if isinstance(r, dict)]
+    records = [r for r in seen if record_provenance_matches(r, provenance)]
+    if seen and not records:
+        return False, "verify_provenance_mismatch", None
     if wanted is not None:
         head_records = [r for r in records if _sha(r.get("sha")) == wanted]
         if any(r.get("ok") is not True for r in head_records):
@@ -1216,7 +1383,12 @@ def check_facts(runs):
 
 
 def load_verify_records(directory):
-    """Verify records from the lane's trusted local store, or ``[]``."""
+    """Verify records from the lane's trusted local store, or ``[]``.
+
+    Each record's provenance fields are carried through verbatim; a record
+    without them stays in the list but can never satisfy a slice, because
+    ``record_provenance_matches`` requires all three.
+    """
     records = []
     root = Path(os.path.expanduser(str(directory)))
     if not root.is_dir():
@@ -1232,7 +1404,19 @@ def load_verify_records(directory):
         ok = document.get("ok")
         if sha is None or not isinstance(ok, bool):
             continue
-        records.append({"record": str(path), "sha": sha, "ok": ok})
+        entry = {"record": str(path), "sha": sha, "ok": ok}
+        repo = _text(document.get("repo")).strip().lower()
+        slice_id = _text(document.get("slice")).strip()
+        contract = _text(document.get("contract_sha256")).strip().lower()
+        if repo:
+            entry["repo"] = repo
+        if slice_id:
+            entry["slice"] = slice_id
+        if contract:
+            entry["contract_sha256"] = contract
+        if document.get("pr") is not None:
+            entry["pr"] = document.get("pr")
+        records.append(entry)
     return records
 
 
@@ -1359,18 +1543,35 @@ def collect_facts(repo_slug, number, repo, token, api_url=DEFAULT_API_URL, http=
     runs = fetch_check_runs(repo_slug, head, token, api_url, http)
     records = load_verify_records(verify_dir)
     compare = collect_compare(repo_slug, head, records, token, api_url, http)
+    pull_class = class_from_gate(gate_record or {})
+    pr_state = pr_facts(pr, files)
+    provenance = None
+    provenance_reason = None
+    if pull_class == SLICE:
+        provenance, provenance_reason = base_lease_provenance(
+            repo,
+            repo_slug,
+            pr_state["number"],
+            pr_state["branch"],
+            pr_state["base_ref"] or LEASE_REF,
+        )
     facts = {
-        "pr": pr_facts(pr, files),
+        "pr": pr_state,
         "reviews": review_facts(reviews),
         "checks": check_facts(runs),
         "required_checks": list(
             required_checks if required_checks is not None
             else required_checks_from_rulesets(repo_slug, repo=repo)
         ),
-        "verify": {"records": records, "compare": compare},
+        "verify": {
+            "records": records,
+            "compare": compare,
+            "provenance": provenance,
+            "provenance_reason": provenance_reason,
+        },
         "owner_held": owner_held_facts(pr.get("labels"), plan_path, repo_slug, number),
         "lease_tamper": gate_record,
-        "class": class_from_gate(gate_record or {}),
+        "class": pull_class,
     }
     return facts
 
@@ -1520,6 +1721,7 @@ def decide(facts, ancestor=None):
             verify_facts.get("compare") or {},
             head,
             files,
+            verify_facts.get("provenance"),
         )
         if not ok:
             return refuse(reason)
@@ -1568,10 +1770,10 @@ def main(argv=None):
     parser.add_argument("--pr", type=int, default=None, help="pull-request number to evaluate")
     parser.add_argument("--repo-slug", default=os.environ.get("GITHUB_REPOSITORY") or None,
                         help="owner/name (default: GITHUB_REPOSITORY)")
-    parser.add_argument("--verify-dir", default=os.environ.get("BUNDLEBEES_VERIFY_DIR") or DEFAULT_VERIFY_DIR,
-                        help="trusted verify-results directory")
-    parser.add_argument("--plan", default=os.environ.get("BUNDLEBEES_PLAN") or DEFAULT_PLAN_PATH,
-                        help="campaign plan holding the owner-held list")
+    # The verify store and the campaign plan are pinned like the gate script:
+    # an operator-supplied path would let the lane read a record or a hold list
+    # that the merge machinery does not own.  Tests inject through the function
+    # parameters of ``collect_facts`` instead.
     parser.add_argument("--merge", action="store_true",
                         help="perform the squash merge at the measured head")
     parser.add_argument("--facts", default=None,
@@ -1642,8 +1844,6 @@ def main(argv=None):
             api_url=api_url,
             pr=pr,
             gate_record=gate,
-            verify_dir=args.verify_dir,
-            plan_path=args.plan,
         )
     except FetchError as exc:
         _emit({"merge": False, "reason": "facts_unavailable", "error": str(exc)[:500]})
