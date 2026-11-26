@@ -8,6 +8,16 @@ merges on an independent review at its exact head plus green checks; a
 substitute for the review, and the review is never a substitute for a slice's
 verify evidence.
 
+A review at an earlier head **carries forward** under the same predicate the
+lease/tamper gate applies: the review commit is an ancestor of the head, every
+commit after it that is not on the base is a merge whose non-first parents are
+on the base, and the pull request's diff against the base is byte-identical
+(same paths, same blob shas) to the reviewed diff.  Updating a branch with the
+base therefore does not demand a fresh review; an authored commit, an unrelated
+merge or any content change still does.  The lane measures the predicate with
+git (``measure_review_carry``) and folds the records into the facts; a facts
+file cannot vouch for its own carry.
+
 A pull request is a slice exactly when a frozen lease on the base branch names
 it (by ``pull_request``, ``branch`` or ``slice``/``id``). The lease/tamper gate
 (workflow #182, vendored in hyvv) makes that classification; this module does
@@ -70,6 +80,34 @@ GATE_TIMEOUT_S = 300
 SENSITIVE_PREFIXES = (".github/", ".rizzstack/", "gate/", "gates/", "policy/")
 SENSITIVE_TOKENS = frozenset(("gate", "gates", "lane", "lanes"))
 
+#: How a review matches the head: at the head itself, or carried from an
+#: earlier head by a base-merge-only update with an unchanged diff.
+REVIEW_MATCH_EXACT = "exact"
+REVIEW_MATCH_CARRIED = "carried"
+
+#: Named outcomes of the base-merge review carry-forward. The refusal reasons
+#: are stable codes shared with the lease/tamper gate, so a lane decision and a
+#: gate log name the same condition.
+CARRY_OK = "review_carry_ok"
+CARRY_NOT_ANCESTOR = "review_not_ancestor"
+CARRY_AUTHORED_COMMIT = "review_carry_authored_commit"
+CARRY_UNRELATED_MERGE = "review_carry_unrelated_merge"
+CARRY_CONTENT_CHANGED = "review_carry_content_changed"
+CARRY_UNREADABLE = "review_carry_unreadable"
+CARRY_UNMEASURED = "review_carry_unmeasured"
+CARRY_STALE = "review_carry_stale"
+CARRY_INVALID = "review_carry_invalid"
+CARRY_REASONS = frozenset(
+    (
+        CARRY_OK,
+        CARRY_NOT_ANCESTOR,
+        CARRY_AUTHORED_COMMIT,
+        CARRY_UNRELATED_MERGE,
+        CARRY_CONTENT_CHANGED,
+        CARRY_UNREADABLE,
+    )
+)
+
 
 def _sha(value):
     if isinstance(value, str):
@@ -83,66 +121,112 @@ def _text(value):
     return value if isinstance(value, str) else ""
 
 
+def _first_line(body):
+    return next((line.strip() for line in _text(body).splitlines() if line.strip()), "")
+
+
+def _head_changes_requested(reviews, head):
+    """A ``CHANGES_REQUESTED`` review at the head always blocks, in any form."""
+    wanted = _sha(head)
+    if wanted is None:
+        return False
+    for review in reviews or []:
+        if not isinstance(review, dict) or _sha(review.get("commit_id")) != wanted:
+            continue
+        if _text(review.get("state")).upper() == "CHANGES_REQUESTED":
+            return True
+        if CHANGES_LINE.search(_first_line(review.get("body"))):
+            return True
+    return False
+
+
+def _independent_form(review):
+    """GitHub ``APPROVED``, or the ``APPROVE (independent review ...)`` form."""
+    state = _text(review.get("state")).upper()
+    if state == "APPROVED":
+        return True
+    if state != "COMMENTED":
+        return False
+    first = _first_line(review.get("body"))
+    return bool(APPROVE_LINE.search(first) and INDEPENDENT.search(first))
+
+
+def _owner_form(review):
+    """The textual owner attestation: ``APPROVE (owner ...)``/``OWNER APPROVED``."""
+    if _text(review.get("state")).upper() not in ("APPROVED", "COMMENTED"):
+        return False
+    return bool(OWNER_APPROVE_LINE.search(_first_line(review.get("body"))))
+
+
 def independent_review_at_head(reviews, head):
     """Return the review that qualifies as an independent approval at ``head``.
 
     A qualifying review is either GitHub state ``APPROVED`` or a ``COMMENTED``
     review whose first non-empty line starts ``APPROVE`` (not ``APPROVED`` and
     not a question such as ``APPROVE?``) and names an ``independent review``.
-    Both must carry ``commit_id`` equal to ``head``; an approval at an older
-    head is not an approval. A ``CHANGES_REQUESTED`` review at the head -- the
-    formal state or the textual ``CHANGES REQUESTED`` convention -- always
-    blocks, even when another review approves.
+    Both must carry ``commit_id`` equal to ``head``; a review at an older head
+    is handled by ``review_acceptance`` (base-merge carry-forward), never here.
+    A ``CHANGES_REQUESTED`` review at the head -- the formal state or the
+    textual ``CHANGES REQUESTED`` convention -- always blocks, even when
+    another review approves.
     """
     wanted = _sha(head)
-    if wanted is None:
+    if wanted is None or _head_changes_requested(reviews, head):
         return None
-    head_reviews = [r for r in reviews if isinstance(r, dict) and _sha(r.get("commit_id")) == wanted]
-    for review in head_reviews:
-        state = _text(review.get("state")).upper()
-        first = next((line.strip() for line in _text(review.get("body")).splitlines() if line.strip()), "")
-        if state == "CHANGES_REQUESTED" or CHANGES_LINE.search(first):
-            return None
-    for review in head_reviews:
-        state = _text(review.get("state")).upper()
-        if state == "APPROVED":
-            return review
-        if state != "COMMENTED":
+    for review in reviews or []:
+        if not isinstance(review, dict) or _sha(review.get("commit_id")) != wanted:
             continue
-        lines = [line.strip() for line in _text(review.get("body")).splitlines() if line.strip()]
-        if lines and APPROVE_LINE.search(lines[0]) and INDEPENDENT.search(lines[0]):
+        if _independent_form(review):
             return review
     return None
 
 
-def review_refusal(reviews, head):
-    """Why ``independent_review_at_head`` found nothing, as a reason code."""
-    wanted = _sha(head)
-    if wanted is None:
-        return "review_missing"
-    for review in reviews:
-        if not isinstance(review, dict) or _sha(review.get("commit_id")) != wanted:
-            continue
-        first = next((line.strip() for line in _text(review.get("body")).splitlines() if line.strip()), "")
-        if _text(review.get("state")).upper() == "CHANGES_REQUESTED" or CHANGES_LINE.search(first):
-            return "review_changes_requested"
-    for review in reviews:
-        if not isinstance(review, dict):
-            continue
-        state = _text(review.get("state")).upper()
-        body = _text(review.get("body"))
-        first = next((line.strip() for line in body.splitlines() if line.strip()), "")
-        approve_form = (
-            state == "APPROVED"
-            or (state == "COMMENTED" and APPROVE_LINE.search(first) and INDEPENDENT.search(first))
-        )
-        if approve_form and _sha(review.get("commit_id")) not in (None, wanted):
-            return "review_at_older_head"
-    return "review_missing"
+def review_carry_record(carry, review_sha, head):
+    """``(ok, reason)`` from the lane-measured carry records.
+
+    The record must be measured for this exact review commit and this exact
+    head. A missing record is ``review_carry_unmeasured`` and a record for a
+    different head is ``review_carry_stale``; both fail closed, so a stale or
+    caller-supplied facts file cannot vouch for a review it did not measure.
+    """
+    if not isinstance(carry, dict):
+        return False, CARRY_UNMEASURED
+    record = carry.get(review_sha)
+    if not isinstance(record, dict):
+        return False, CARRY_UNMEASURED
+    if _sha(record.get("head")) != _sha(head) or _sha(record.get("review_sha")) != _sha(review_sha):
+        return False, CARRY_STALE
+    if record.get("ok") is True:
+        return True, CARRY_OK
+    reason = record.get("reason")
+    if isinstance(reason, str) and reason in CARRY_REASONS:
+        return False, reason
+    return False, CARRY_INVALID
 
 
-def _first_line(body):
-    return next((line.strip() for line in _text(body).splitlines() if line.strip()), "")
+def review_acceptance(reviews, head, carry):
+    """``(review, match, reason)`` for the independent-review rule.
+
+    The exact-head approval wins. Otherwise the newest approval at an earlier
+    head is offered to the measured carry records; the first that carries
+    wins. The refusal names the newest rejected candidate's condition.
+    """
+    exact = independent_review_at_head(reviews, head)
+    if exact is not None:
+        return exact, REVIEW_MATCH_EXACT, "reviewed"
+    if _head_changes_requested(reviews, head):
+        return None, None, "review_changes_requested"
+    refusal = None
+    for review in reversed([r for r in reviews or [] if isinstance(r, dict)]):
+        commit = _sha(review.get("commit_id"))
+        if commit is None or commit == _sha(head) or not _independent_form(review):
+            continue
+        ok, reason = review_carry_record(carry, commit, head)
+        if ok:
+            return review, REVIEW_MATCH_CARRIED, "reviewed"
+        if refusal is None:
+            refusal = reason
+    return None, None, refusal or "review_missing"
 
 
 def owner_review_at_head(reviews, head):
@@ -152,39 +236,45 @@ def owner_review_at_head(reviews, head):
     independent code review. On a single-maintainer account the GitHub login
     cannot prove who typed the review, so the owner attestation is textual:
     the first non-empty line starts ``APPROVE (owner`` or ``OWNER APPROVED``.
-    The review must carry ``commit_id`` equal to the head; a
+    The review must carry ``commit_id`` equal to the head; a review at an
+    earlier head is handled by ``owner_review_acceptance``. A
     ``CHANGES_REQUESTED`` review at the head always blocks.
     """
     wanted = _sha(head)
-    if wanted is None:
+    if wanted is None or _head_changes_requested(reviews, head):
         return None
-    head_reviews = [r for r in reviews if isinstance(r, dict) and _sha(r.get("commit_id")) == wanted]
-    for review in head_reviews:
-        state = _text(review.get("state")).upper()
-        if state == "CHANGES_REQUESTED" or CHANGES_LINE.search(_first_line(review.get("body"))):
-            return None
-    for review in head_reviews:
-        state = _text(review.get("state")).upper()
-        if state not in ("APPROVED", "COMMENTED"):
+    for review in reviews or []:
+        if not isinstance(review, dict) or _sha(review.get("commit_id")) != wanted:
             continue
-        if OWNER_APPROVE_LINE.search(_first_line(review.get("body"))):
+        if _owner_form(review):
             return review
     return None
 
 
-def owner_review_refusal(reviews, head):
-    """Why ``owner_review_at_head`` found nothing, as a reason code."""
-    wanted = _sha(head)
-    for review in reviews:
-        if not isinstance(review, dict):
+def owner_review_acceptance(reviews, head, carry):
+    """``(review, match, reason)`` for the owner-review rule.
+
+    Applies the same base-merge carry-forward as the independent review: an
+    owner attestation at an earlier head counts only under the measured
+    predicate, so an owner decision does not have to be re-posted for a
+    base-merge-only update either.
+    """
+    exact = owner_review_at_head(reviews, head)
+    if exact is not None:
+        return exact, REVIEW_MATCH_EXACT, "owner_reviewed"
+    if _head_changes_requested(reviews, head):
+        return None, None, "owner_review_missing"
+    refusal = None
+    for review in reversed([r for r in reviews or [] if isinstance(r, dict)]):
+        commit = _sha(review.get("commit_id"))
+        if commit is None or commit == _sha(head) or not _owner_form(review):
             continue
-        state = _text(review.get("state")).upper()
-        if state not in ("APPROVED", "COMMENTED"):
-            continue
-        if OWNER_APPROVE_LINE.search(_first_line(review.get("body"))):
-            if wanted is not None and _sha(review.get("commit_id")) not in (None, wanted):
-                return "owner_review_at_older_head"
-    return "owner_review_missing"
+        ok, reason = review_carry_record(carry, commit, head)
+        if ok:
+            return review, REVIEW_MATCH_CARRIED, "owner_reviewed"
+        if refusal is None:
+            refusal = reason
+    return None, None, refusal or "owner_review_missing"
 
 
 def _path_tokens(path):
@@ -229,6 +319,195 @@ def _git(repo, *args, timeout=60):
         text=True,
         timeout=timeout,
     )
+
+
+def _commit_exists(repo, sha):
+    return _git(repo, "cat-file", "-e", "%s^{commit}" % sha).returncode == 0
+
+
+def _is_ancestor(repo, older, newer):
+    return _git(repo, "merge-base", "--is-ancestor", older, newer).returncode == 0
+
+
+def _merge_base(repo, base, head):
+    """The common ancestor of ``base`` and ``head`` (``base`` if git cannot say)."""
+    proc = _git(repo, "merge-base", base, head)
+    value = proc.stdout.strip()
+    return value if proc.returncode == 0 and value else base
+
+
+def _parents(repo, sha):
+    return _git(repo, "rev-list", "--parents", "-n", "1", sha).stdout.split()[1:]
+
+
+def _subject(repo, sha):
+    return _git(repo, "log", "-1", "--format=%s", sha).stdout.strip()
+
+
+def _diff_blobs(repo, older, newer):
+    """``{path: new blob sha or None}`` for one tree-to-tree diff."""
+    proc = _git(repo, "diff", "--raw", "-z", "--no-renames", "--no-abbrev", older, newer)
+    if proc.returncode != 0:
+        raise RuntimeError("git diff failed: " + (proc.stderr or "").strip()[-200:])
+    fields = proc.stdout.split("\0")
+    blobs = {}
+    index = 0
+    while index + 1 < len(fields):
+        header, path = fields[index], fields[index + 1]
+        index += 2
+        if not header.startswith(":"):
+            continue
+        parts = header[1:].split()
+        if len(parts) < 5:
+            continue
+        new_sha = parts[3]
+        blobs[path] = None if set(new_sha) == {"0"} else new_sha
+    return blobs
+
+
+def reviewed_diff_blobs(repo, base, revision):
+    """The pull request's diff at ``revision`` as ``{path: blob sha or None}``."""
+    return _diff_blobs(repo, _merge_base(repo, base, revision), revision)
+
+
+def review_carry_forward(repo, review_sha, base, head, timeout=60):
+    """``(ok, reason, detail)``: may a review at ``review_sha`` judge ``head``?
+
+    The same predicate as the lease/tamper gate (workflow):
+
+    1. ``review_sha`` is an ancestor of ``head`` (a rewritten-away review
+       judged different code and never carries);
+    2. every commit in ``review_sha..head`` that is not already on the base is
+       a merge commit whose non-first parents are on the base;
+    3. the pull request's diff against the base is byte-identical at ``head``
+       and at ``review_sha`` (same paths, same blob shas).
+
+    Anything else fails closed with a named reason.
+    """
+    if not isinstance(review_sha, str) or not SHA.fullmatch(review_sha.strip().lower()):
+        return False, CARRY_NOT_ANCESTOR, "the review names no full commit sha"
+    review_sha = review_sha.strip().lower()
+    try:
+        if not _commit_exists(repo, review_sha):
+            return (
+                False,
+                CARRY_NOT_ANCESTOR,
+                "review commit %s is not in this history" % review_sha[:12],
+            )
+        if review_sha != head and not _is_ancestor(repo, review_sha, head):
+            return (
+                False,
+                CARRY_NOT_ANCESTOR,
+                "review commit %s is not an ancestor of head %s; the reviewed history was "
+                "rewritten away" % (review_sha[:12], head[:12]),
+            )
+
+        listed = _git(
+            repo, "rev-list", "%s..%s" % (review_sha, head), "--not", base, timeout=timeout
+        )
+        if listed.returncode != 0:
+            raise RuntimeError("git rev-list failed: " + (listed.stderr or "").strip()[-200:])
+        commits = [line for line in listed.stdout.splitlines() if line]
+        for sha in commits:
+            parents = _parents(repo, sha)
+            subject = _subject(repo, sha)
+            if len(parents) < 2:
+                return (
+                    False,
+                    CARRY_AUTHORED_COMMIT,
+                    "commit %s (\"%s\") was authored after the review; only merges of the base "
+                    "may follow a review" % (sha[:12], subject),
+                )
+            for parent in parents[1:]:
+                if not _is_ancestor(repo, parent, base):
+                    return (
+                        False,
+                        CARRY_UNRELATED_MERGE,
+                        "merge %s (\"%s\") brings in %s, which is not on base %s; only a merge "
+                        "of the base may follow a review"
+                        % (sha[:12], subject, parent[:12], base[:12]),
+                    )
+
+        reviewed = reviewed_diff_blobs(repo, base, review_sha)
+        current = reviewed_diff_blobs(repo, base, head)
+        if reviewed != current:
+            changed = sorted(
+                path for path in set(reviewed) | set(current) if reviewed.get(path) != current.get(path)
+            )
+            detail = ", ".join(changed[:8]) + (" ..." if len(changed) > 8 else "")
+            return (
+                False,
+                CARRY_CONTENT_CHANGED,
+                "the diff against base %s is not byte-identical to the reviewed diff: %s"
+                % (base[:12], detail or "<trees differ>"),
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, CARRY_UNREADABLE, "cannot read the review history: %s" % type(exc).__name__
+    except RuntimeError as exc:
+        return False, CARRY_UNREADABLE, str(exc)
+    return (
+        True,
+        CARRY_OK,
+        "every commit after review %s is a merge of base %s and the diff is byte-identical"
+        % (review_sha[:12], base[:12]),
+    )
+
+
+def measure_review_carry(repo, review_sha, base, head, timeout=60):
+    """Measure one review's carry-forward against this checkout.
+
+    ``base`` is a ref or sha (the lane uses the pull request's ``base_ref``).
+    The record names the review commit, the resolved base and the head it was
+    measured for, so ``decide()`` can refuse a record measured for another
+    head.
+    """
+    record = {
+        "review_sha": review_sha,
+        "base": None,
+        "head": head,
+        "ok": False,
+        "reason": CARRY_UNREADABLE,
+        "detail": "",
+    }
+    try:
+        resolved = _git(repo, "rev-parse", "--verify", "%s^{commit}" % (base or GATE_SCRIPT_REF))
+        if resolved.returncode != 0:
+            record["detail"] = "base %r is not resolvable in this checkout" % (base or GATE_SCRIPT_REF)
+            return record
+        record["base"] = resolved.stdout.strip()
+        ok, reason, detail = review_carry_forward(
+            repo, review_sha, record["base"], head, timeout=timeout
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        record["detail"] = type(exc).__name__
+        return record
+    record["ok"] = bool(ok)
+    record["reason"] = reason
+    record["detail"] = detail
+    return record
+
+
+def measure_review_carry_facts(repo, pr, reviews, timeout=60):
+    """Measure every review that is not at the head, keyed by its commit.
+
+    ``main()`` folds this into the facts. Only reviews whose ``commit_id`` is a
+    full sha and differs from the head are measured; the head review needs no
+    carry. Records are keyed by the review commit so ``review_carry_record``
+    can demand the exact one it evaluates.
+    """
+    head = _sha(pr.get("head"))
+    base_ref = pr.get("base_ref") or GATE_SCRIPT_REF
+    records = {}
+    if head is None or not isinstance(reviews, (list, tuple)):
+        return records
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        commit = _sha(review.get("commit_id"))
+        if commit is None or commit == head or commit in records:
+            continue
+        records[commit] = measure_review_carry(repo, commit, base_ref, head, timeout=timeout)
+    return records
 
 
 def run_lease_tamper(repo, head, base=GATE_SCRIPT_REF, number=None, branch=None,
@@ -492,6 +771,8 @@ def decide(facts):
         "head": head,
         "sensitive_files": [],
         "lease_tamper": None,
+        "review": None,
+        "owner_review": None,
     }
 
     def refuse(reason):
@@ -536,13 +817,19 @@ def decide(facts):
     if not ok:
         return refuse(reason)
 
-    if independent_review_at_head(reviews, head) is None:
-        return refuse(review_refusal(reviews, head))
+    carry = facts.get("review_carry")
+    review, review_match, review_reason = review_acceptance(reviews, head, carry)
+    if review is None:
+        return refuse(review_reason)
+    verdict["review"] = review_match
 
     sensitive = sensitive_paths(files)
     verdict["sensitive_files"] = sensitive
-    if sensitive and owner_review_at_head(reviews, head) is None:
-        return refuse(owner_review_refusal(reviews, head))
+    if sensitive:
+        owner_review, owner_match, owner_reason = owner_review_acceptance(reviews, head, carry)
+        if owner_review is None:
+            return refuse(owner_reason)
+        verdict["owner_review"] = owner_match
 
     if pull_class == SLICE:
         verify_facts = facts.get("verify")
@@ -615,6 +902,10 @@ def main(argv=None):
             repo_slug=args.repo_slug,
             script_ref=args.gate_ref,
         )
+
+    # The review carry-forward is measured too, never supplied: overwrite any
+    # caller copy so a facts file cannot vouch for a review it did not measure.
+    facts["review_carry"] = measure_review_carry_facts(args.repo, pr, facts.get("reviews"))
 
     verdict = decide(facts)
     print(json.dumps(verdict, sort_keys=True))

@@ -7,10 +7,15 @@ branch, or edits a running lane.**
 Owner decision (2026-11-25): the merge lane's evidence rule depends on the
 class of the pull request.
 
-| Class | Green checks at head | Independent review at the exact head | Verify evidence |
+| Class | Green checks at head | Independent review at the head, or carried forward from an earlier head | Verify evidence |
 | --- | --- | --- | --- |
 | **slice** (a frozen lease on the base branch names it) | required | required | **required** at the exact head, or blob equality on every changed file |
 | **non-slice** (docs fix, CI chore, gate change with no slice lease) | required | required | not required |
+
+"Carried forward" is the owner's 2026-11-25 rule: a review at an earlier head
+still counts when every commit after it is a merge of the base and the pull
+request's diff against the base is byte-identical (per-file blob equality). See
+[Review carry-forward](#review-carry-forward).
 
 The two classes do not borrow each other's evidence: a review alone does not
 merge a slice, and a verify record alone does not merge anything. An unknown
@@ -49,6 +54,9 @@ Input (`--facts facts.json`):
   "lease_tamper": {"ran": true, "ok": true, "reason": "gate_ok",
                    "script_ref": "origin/main", "script_sha": "<40-hex>",
                    "base": "<40-hex>", "head": "<40-hex>", "exit_code": 0},
+  "review_carry": {"<review-sha>": {"review_sha": "<40-hex>", "base": "<40-hex>",
+                                    "head": "<40-hex>", "ok": true,
+                                    "reason": "review_carry_ok", "detail": "..."}},
   "owner_held": false
 }
 ```
@@ -60,17 +68,35 @@ into the facts. `decide()` refuses a missing, unrun or failed record. A facts
 file that carries its own record is overwritten, so a caller cannot vouch for
 the gate.
 
+The `review_carry` records are **measured by the lane** the same way:
+`main()` runs `measure_review_carry()` (the same git predicate the lease/tamper
+gate applies) for every review whose `commit_id` differs from the head and
+overwrites any caller copy. `decide()` accepts an earlier review only from a
+record keyed by that review's sha, measured for this exact head; a missing
+record is `review_carry_unmeasured` and a record for another head is
+`review_carry_stale`, both fail-closed.
+
 The module returns `{"merge": bool, "class": ..., "reason": ..., "verify":
-"exact"|"blob"|null, "head": ...}`. Exit status is 0 only when `merge` is true.
+"exact"|"blob"|null, "review": "exact"|"carried"|null, "owner_review":
+"exact"|"carried"|null, "head": ...}`. Exit status is 0 only when `merge` is
+true.
 
 Rules enforced in code:
 
 - **Review** — GitHub `APPROVED`, or `COMMENTED` whose first non-empty line
   is the attestation form `APPROVE (independent review ...)` (markdown bold
   allowed; `APPROVED`, `APPROVE?` and `APPROVE (not an independent review)`
-  do not qualify), with `commit_id` equal to the head. A review at an older
-  head is `review_at_older_head`; a `CHANGES_REQUESTED` review at the head —
-  formal state or the textual `CHANGES REQUESTED` convention — always blocks.
+  do not qualify). The review is accepted at the exact head, or at an earlier
+  head that **carries forward** (owner rule, 2026-11-25) when the measured
+  record says all three hold: the review commit is an ancestor of the head,
+  every commit after it that is not on the base is a merge whose non-first
+  parents are on the base, and the PR's diff against the base is byte-identical
+  (same paths, same blob shas) to the reviewed diff. A refused carry names its
+  condition — `review_not_ancestor`, `review_carry_authored_commit`,
+  `review_carry_unrelated_merge`, `review_carry_content_changed`,
+  `review_carry_unreadable`, `review_carry_unmeasured`, `review_carry_stale`
+  or `review_carry_invalid`. A `CHANGES_REQUESTED` review at the head — formal
+  state or the textual `CHANGES REQUESTED` convention — always blocks.
   Reviewer independence is the reviewing agent's attestation: on this
   single-maintainer account every review is posted by the same GitHub login,
   so login equality cannot be used as the test.
@@ -102,13 +128,14 @@ Rules enforced in code:
 - **Owner review for gate/lane changes** — a PR that touches `.github/**`,
   `.rizzstack/**`, `gate/**`, `gates/**`, `policy/**`, or a file whose name
   contains the word `gate` or `lane` (`scripts/merge_lane_v5.py`,
-  `scripts/check_ci_gate.py`) additionally needs an explicit **owner** review
-  at the exact head: first non-empty line `APPROVE (owner …)` or
-  `OWNER APPROVED`, `commit_id` equal to the head. The independent review and
-  the owner review do not substitute for each other; a `CHANGES_REQUESTED`
-  review at the head blocks. Refusals: `owner_review_missing`,
-  `owner_review_at_older_head`. Word tokens are used, so `delegate.py` is not
-  gate code.
+  `scripts/check_ci_gate.py`) additionally needs an explicit **owner** review:
+  first non-empty line `APPROVE (owner …)` or `OWNER APPROVED`, at the exact
+  head or at an earlier head that carries forward under the same predicate. The
+  independent review and the owner review do not substitute for each other; a
+  `CHANGES_REQUESTED` review at the head blocks. Refusals:
+  `owner_review_missing` or the carry condition (`review_carry_unmeasured`,
+  `review_carry_stale`, …). Word tokens are used, so `delegate.py` is not gate
+  code.
 - **Owner gate** — `owner_held` must be explicitly `false`; true is
   `owner_gate` and an absent/unknown value is `owner_gate_unknown`. It blocks
   both classes before anything else.
@@ -122,19 +149,48 @@ Reason codes: `owner_gate`, `owner_gate_unknown`, `facts_invalid`,
 `head_missing`, `files_invalid`, `class_unknown`, `checks_missing`,
 `checks_pending`, `checks_failed`, `checks_invalid`, `checks_unattributed`,
 `checks_ambiguous`, `required_checks_missing`, `reviews_invalid`,
-`review_missing`, `review_at_older_head`, `review_changes_requested`,
+`review_missing`, `review_changes_requested`, `review_not_ancestor`,
+`review_carry_authored_commit`, `review_carry_unrelated_merge`,
+`review_carry_content_changed`, `review_carry_unreadable`,
+`review_carry_unmeasured`, `review_carry_stale`, `review_carry_invalid`,
 `lease_tamper_not_run`, `lease_tamper_failed`, `owner_review_missing`,
-`owner_review_at_older_head`, `verify_evidence_missing`,
-`verify_failed_at_head`, `verify_at_older_head`,
+`verify_evidence_missing`, `verify_failed_at_head`, `verify_at_older_head`,
 `verify_blob_check_inconclusive`, `reviewed`.
+
+## Review carry-forward
+
+The predicate is the same one `lease_tamper.py` applies to a non-slice pull
+request, and the lane measures it with git; the facts never supply it:
+
+1. the review's `commit_id` is an ancestor of the head (a review that was
+   rewritten away judged different code and never carries);
+2. every commit in `review_sha..head` that is not already on the base is a
+   merge commit whose non-first parents are on the base — a branch update, not
+   authored work;
+3. `git diff base...head` and `git diff base...review_sha` carry the same paths
+   with the same blob shas (`--raw --no-renames`, so a rename is a delete plus
+   an add): the diff the reviewer read is byte-identical to the diff that would
+   merge.
+
+If any condition fails the earlier review does not count and the refusal names
+the condition. The same rule covers the owner attestation required on a
+gate/lane change.
 
 ## Rollout
 
 1. This PR lands the decision core, the policy and the tests for both classes,
-   the self-run lease/tamper gate and the sensitive-path owner review.
+   the self-run lease/tamper gate, the sensitive-path owner review and the
+   base-merge review carry-forward.
 2. An independent review at the PR head is required before merge (the PR is
-   non-slice: no frozen lease names it).
-3. After the merge, the coordinator updates the live
+   non-slice: no frozen lease names it), or a review at an earlier head that
+   carries forward once the gate change is on `main`; the lane applies the
+   carry to itself the same way it applies it to every pull request.
+3. The gate change that defines the carry-forward predicate is a separate
+   pull request to `mojomast/workflow` (vendored into `hyvv`). It must land
+   first: `main()` extracts `lease_tamper.py` from `origin/main`, so until that
+   change is on `main` the extracted gate still demands an exact-head review.
+   Neither change is live before the owner's outside review.
+4. After both merges, the coordinator updates the live
    `rizzstack-auto-merge-v5` cron prompt to gate 4 = "slice only", to read the
    class from the lease/tamper gate, and to invoke this module with
    `--repo <clean checkout> --repo-slug <owner/repo>` so the gate runs on

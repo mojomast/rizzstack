@@ -93,6 +93,20 @@ def verify(sha=HEAD, ok=True, record="verify-results/landed.json"):
     return {"record": record, "sha": sha, "ok": ok}
 
 
+def carry(sha=OLDER, head=HEAD, ok=True, reason=None):
+    """A lane-measured review carry-forward record for ``sha``."""
+    return {
+        sha: {
+            "review_sha": sha,
+            "base": "c" * 40,
+            "head": head,
+            "ok": ok,
+            "reason": reason or (lane.CARRY_OK if ok else lane.CARRY_CONTENT_CHANGED),
+            "detail": "",
+        }
+    }
+
+
 class NonSliceTests(unittest.TestCase):
     def test_review_and_green_checks_merge_without_verify_evidence(self):
         verdict = lane.decide(facts())
@@ -113,11 +127,11 @@ class NonSliceTests(unittest.TestCase):
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "review_missing")
 
-    def test_review_at_an_older_head_is_not_an_approval(self):
+    def test_review_at_an_older_head_without_carry_evidence_is_not_an_approval(self):
         value = facts(reviews=[approve(OLDER)])
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
-        self.assertEqual(verdict["reason"], "review_at_older_head")
+        self.assertEqual(verdict["reason"], "review_carry_unmeasured")
 
     def test_changes_requested_at_head_blocks_even_with_an_approve(self):
         value = facts(reviews=[
@@ -162,6 +176,83 @@ class NonSliceTests(unittest.TestCase):
     def test_markdown_bold_approve_form_passes(self):
         value = facts(reviews=[approve(body="**APPROVE** (independent review at %s)" % HEAD)])
         self.assertTrue(lane.decide(value)["merge"])
+
+
+class ReviewCarryForwardTests(unittest.TestCase):
+    """Owner rule: a review at an earlier head carries over a base-merge-only update.
+
+    The decision core consumes the lane-measured carry records; the git
+    predicate itself is covered by ReviewCarryMeasurementTests below.
+    """
+
+    def test_a_carried_independent_review_merges(self):
+        verdict = lane.decide(facts(reviews=[approve(OLDER)], review_carry=carry(OLDER)))
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["review"], lane.REVIEW_MATCH_CARRIED)
+        self.assertEqual(verdict["reason"], "reviewed")
+
+    def test_an_exact_head_review_is_preferred_and_needs_no_carry(self):
+        verdict = lane.decide(facts(reviews=[approve(OLDER), approve()], review_carry={}))
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["review"], lane.REVIEW_MATCH_EXACT)
+
+    def test_an_authored_commit_after_the_review_refuses_named(self):
+        value = facts(reviews=[approve(OLDER)],
+                      review_carry=carry(OLDER, ok=False, reason=lane.CARRY_AUTHORED_COMMIT))
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_authored_commit")
+
+    def test_a_content_change_after_the_review_refuses_named(self):
+        value = facts(reviews=[approve(OLDER)],
+                      review_carry=carry(OLDER, ok=False, reason=lane.CARRY_CONTENT_CHANGED))
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_content_changed")
+
+    def test_a_merge_of_an_unrelated_branch_refuses_named(self):
+        value = facts(reviews=[approve(OLDER)],
+                      review_carry=carry(OLDER, ok=False, reason=lane.CARRY_UNRELATED_MERGE))
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_unrelated_merge")
+
+    def test_a_review_rewritten_away_refuses_named(self):
+        value = facts(reviews=[approve(OLDER)],
+                      review_carry=carry(OLDER, ok=False, reason=lane.CARRY_NOT_ANCESTOR))
+        self.assertEqual(lane.decide(value)["reason"], "review_not_ancestor")
+
+    def test_missing_carry_evidence_fails_closed(self):
+        self.assertEqual(lane.decide(facts(reviews=[approve(OLDER)]))["reason"],
+                         "review_carry_unmeasured")
+
+    def test_a_record_measured_for_another_head_is_stale(self):
+        value = facts(reviews=[approve(OLDER)], review_carry=carry(OLDER, head="e" * 40))
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_stale")
+
+    def test_an_unknown_record_reason_is_invalid(self):
+        value = facts(reviews=[approve(OLDER)], review_carry=carry(OLDER, ok=False, reason="because"))
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_invalid")
+
+    def test_a_carried_review_still_needs_the_slice_verify_record(self):
+        value = facts(reviews=[approve(OLDER)], review_carry=carry(OLDER))
+        value["class"] = lane.SLICE
+        value["verify"] = {"records": [], "compare": {}}
+        self.assertEqual(lane.decide(value)["reason"], "verify_evidence_missing")
+
+    def test_a_carried_owner_review_satisfies_the_extra_gate(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]},
+                      reviews=[approve(OLDER), owner_approve(OLDER)],
+                      review_carry=carry(OLDER))
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["review"], lane.REVIEW_MATCH_CARRIED)
+        self.assertEqual(verdict["owner_review"], lane.REVIEW_MATCH_CARRIED)
+
+    def test_a_carried_owner_review_needs_its_own_carry_record(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]},
+                      reviews=[approve(), owner_approve(OLDER)],
+                      review_carry={})
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_unmeasured")
+
+    def test_a_gate_change_still_needs_the_owner_review_when_the_independent_review_carries(self):
+        value = facts(pr={"files": [".github/scripts/lease_tamper.py"]},
+                      reviews=[approve(OLDER)], review_carry=carry(OLDER))
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
 
 
 class SliceTests(unittest.TestCase):
@@ -247,14 +338,14 @@ class SliceTests(unittest.TestCase):
         self.assertTrue(verdict["merge"], verdict)
         self.assertEqual(verdict["verify"], "blob")
 
-    def test_slice_exact_verify_with_review_at_an_older_head_refuses(self):
+    def test_slice_exact_verify_with_review_at_an_older_head_without_carry_refuses(self):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {"records": [verify()], "compare": {}}
         value["reviews"] = [approve(OLDER)]
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
-        self.assertEqual(verdict["reason"], "review_at_older_head")
+        self.assertEqual(verdict["reason"], "review_carry_unmeasured")
 
     def test_slice_explicit_null_compare_proves_identical_trees(self):
         value = facts()
@@ -464,10 +555,10 @@ class SensitivePathOwnerReviewTests(unittest.TestCase):
         self.assertTrue(verdict["merge"], verdict)
         self.assertEqual(verdict["sensitive_files"], [".github/workflows/ci.yml"])
 
-    def test_owner_review_at_an_older_head_does_not(self):
+    def test_owner_review_at_an_older_head_without_carry_evidence_does_not(self):
         value = facts(pr={"files": [".github/workflows/ci.yml"]},
                       reviews=[approve(), owner_approve(OLDER)])
-        self.assertEqual(lane.decide(value)["reason"], "owner_review_at_older_head")
+        self.assertEqual(lane.decide(value)["reason"], "review_carry_unmeasured")
 
     def test_independent_review_does_not_satisfy_the_owner_gate(self):
         value = facts(pr={"files": [".github/scripts/lease_tamper.py"]})
@@ -562,6 +653,182 @@ class LeaseTamperRunnerTests(unittest.TestCase):
         self.assertFalse(record["ran"], record)
         self.assertFalse(record["ok"], record)
         self.assertEqual(record["reason"], "gate_ref_unresolved")
+
+
+class ReviewCarryMeasurementTests(unittest.TestCase):
+    """The lane's git predicate must match the gate's, case by case."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "test")
+        self._write(".github/scripts/lease_tamper.py", "import sys\nsys.exit(0)\n")
+        self._write("src/slice.py", "base\n")
+        self.base = self._commit("base")
+        self._git("update-ref", "refs/remotes/origin/main", self.base)
+        self._git("checkout", "-q", "-b", "feat/x")
+        self._write("src/slice.py", "reviewed\n")
+        self.reviewed = self._commit("implement the slice")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            capture_output=True, text=True, timeout=30, check=True)
+
+    def _write(self, name, text):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _commit(self, message):
+        self._git("add", "-A")
+        self._git("commit", "-qm", message)
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def _advance_base(self, name="src/base.py", text="base advance\n"):
+        self._git("checkout", "-q", "main")
+        self._write(name, text)
+        tip = self._commit("main advances")
+        self._git("checkout", "-q", "feat/x")
+        return tip
+
+    def _merge(self, ref="main", message="merge the base"):
+        self._git("merge", "--no-ff", "-m", message, ref)
+        return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def test_base_merge_only_update_measures_ok(self):
+        new_base = self._advance_base()
+        head = self._merge()
+
+        record = lane.measure_review_carry(str(self.repo), self.reviewed, new_base, head)
+
+        self.assertTrue(record["ok"], record)
+        self.assertEqual(record["reason"], lane.CARRY_OK)
+        self.assertEqual(record["base"], new_base)
+        self.assertEqual(record["head"], head)
+
+    def test_an_authored_commit_measures_refused(self):
+        self._write("src/slice.py", "changed\n")
+        head = self._commit("change it after the review")
+
+        record = lane.measure_review_carry(str(self.repo), self.reviewed, self.base, head)
+
+        self.assertFalse(record["ok"], record)
+        self.assertEqual(record["reason"], lane.CARRY_AUTHORED_COMMIT)
+
+    def test_a_merge_of_an_unrelated_branch_measures_refused(self):
+        self._git("checkout", "-q", "-b", "side", "main")
+        self._write("src/side.py", "side\n")
+        self._commit("side work")
+        self._git("checkout", "-q", "feat/x")
+        head = self._merge("side", "merge side")
+
+        record = lane.measure_review_carry(str(self.repo), self.reviewed, self.base, head)
+
+        self.assertEqual(record["reason"], lane.CARRY_UNRELATED_MERGE)
+
+    def test_a_conflict_resolution_that_changes_content_measures_refused(self):
+        self._git("checkout", "-q", "main")
+        self._write("src/slice.py", "main side\n")
+        new_base = self._commit("main edits the same line")
+        self._git("checkout", "-q", "feat/x")
+        conflicted = subprocess.run(
+            ["git", "-C", str(self.repo), "merge", "main"], capture_output=True, text=True)
+        self.assertNotEqual(conflicted.returncode, 0, "the fixture must produce a conflict")
+        self._write("src/slice.py", "resolution\n")
+        head = self._commit("resolve differently")
+
+        record = lane.measure_review_carry(str(self.repo), self.reviewed, new_base, head)
+
+        self.assertEqual(record["reason"], lane.CARRY_CONTENT_CHANGED)
+
+    def test_a_rewritten_away_review_measures_refused(self):
+        self._git("checkout", "-q", "-b", "stale", "main")
+        self._write("src/slice.py", "stale\n")
+        stale = self._commit("a reviewed variant")
+        self._git("checkout", "-q", "feat/x")
+        self._write("src/slice.py", "rewritten\n")
+        head = self._commit("rewrite the branch")
+
+        record = lane.measure_review_carry(str(self.repo), stale, self.base, head)
+
+        self.assertEqual(record["reason"], lane.CARRY_NOT_ANCESTOR)
+
+    def test_measure_review_carry_facts_keys_every_non_head_review(self):
+        new_base = self._advance_base()
+        head = self._merge()
+        reviews = [
+            {"commit_id": self.reviewed},
+            {"commit_id": head},
+            {"commit_id": "not-a-sha"},
+        ]
+
+        records = lane.measure_review_carry_facts(
+            str(self.repo), {"head": head, "base_ref": new_base}, reviews)
+
+        self.assertEqual(list(records), [self.reviewed])
+        self.assertTrue(records[self.reviewed]["ok"], records)
+
+    # -- end-to-end through main() ----------------------------------------
+
+    def _facts_payload(self, head, base_ref):
+        return {
+            "pr": {
+                "state": "OPEN", "is_draft": False, "mergeable": True,
+                "merge_state_status": "CLEAN", "head": head,
+                "number": 12, "branch": "feat/x", "base_ref": base_ref,
+                "files": ["src/slice.py"],
+            },
+            "class": lane.NON_SLICE,
+            "reviews": [
+                {"state": "COMMENTED", "commit_id": self.reviewed,
+                 "body": "APPROVE (independent review at %s)" % self.reviewed}
+            ],
+            "checks": [{"name": "ci-gate", "status": "completed",
+                        "conclusion": "success", "head": head}],
+            "required_checks": ["ci-gate"],
+            "owner_held": False,
+        }
+
+    def _run_cli(self, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "facts.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), "--facts", str(path),
+                 "--repo", str(self.repo), "--gate-ref", "origin/main"],
+                capture_output=True, text=True, timeout=60)
+
+    def test_cli_measures_the_carry_itself_and_merges(self):
+        new_base = self._advance_base()
+        head = self._merge()
+
+        proc = self._run_cli(self._facts_payload(head, new_base))
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        verdict = json.loads(proc.stdout)
+        self.assertEqual(verdict["review"], "carried")
+        self.assertTrue(verdict["merge"], verdict)
+
+    def test_cli_overwrites_a_caller_supplied_carry_record(self):
+        # A facts file may not vouch for a review: main() re-measures and the
+        # authored commit wins over the claimed "ok".
+        self._write("src/slice.py", "changed after the review\n")
+        head = self._commit("authored after the review")
+        payload = self._facts_payload(head, self.base)
+        payload["review_carry"] = carry(self.reviewed)
+
+        proc = self._run_cli(payload)
+
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        verdict = json.loads(proc.stdout)
+        self.assertEqual(verdict["reason"], "review_carry_authored_commit")
+        self.assertIsNone(verdict["review"])
 
 
 class CommandLineTests(unittest.TestCase):
