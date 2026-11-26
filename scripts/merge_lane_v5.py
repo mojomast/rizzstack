@@ -98,6 +98,12 @@ LEASE_FROZEN_STATUSES = ("approved", "frozen")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
+
+#: The gate's final line.  The risk tier is optional so an older gate (without
+#: the tier step) still parses, and a lane never derives either value itself.
+_GATE_CLASS_LINE = re.compile(
+    r"^lease-tamper: class=(slice|non-slice)(?: TIER=(T1|T3))?$"
+)
 STAMP_LINE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
 
@@ -900,15 +906,23 @@ def class_from_gate(record):
     The lane never derives the class itself: a branch-name prefix is not a
     classifier, and a caller cannot supply one.
     """
-    # The gate prints the class as its final stdout line.  Take the LAST
+    # The gate prints the class as its final stdout line, optionally followed by
+    # the risk tier ("lease-tamper: class=slice TIER=T1").  Take the LAST
     # anchored line, never a substring: a changed path or contract id echoed
     # earlier in the output must not be able to name the class.
     for line in reversed(_text((record or {}).get("output_tail")).splitlines()):
-        stripped = line.strip()
-        if stripped == "lease-tamper: class=slice":
-            return SLICE
-        if stripped == "lease-tamper: class=non-slice":
-            return NON_SLICE
+        match = _GATE_CLASS_LINE.match(line.strip())
+        if match:
+            return match.group(1)
+    return None
+
+
+def tier_from_gate(record):
+    """The risk tier the trusted gate printed (``T1``/``T3``), or ``None``."""
+    for line in reversed(_text((record or {}).get("output_tail")).splitlines()):
+        match = _GATE_CLASS_LINE.match(line.strip())
+        if match and match.group(2):
+            return match.group(2)
     return None
 
 

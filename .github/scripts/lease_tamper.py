@@ -70,9 +70,54 @@ sensitive-path list and the only-green conclusion live in one shared policy
 block, vendored byte-identically here and in the merge lane
 (``scripts/merge_lane_v5.py``): two parsers would drift, and the lane must
 accept exactly what this gate accepts.  The gate prints a machine-readable
-``lease-tamper: class=slice`` / ``lease-tamper: class=non-slice`` line on a
-passing run so the lane takes the class from the trusted gate output instead of
-deriving it from a branch name.
+``lease-tamper: class=slice TIER=T1`` / ``lease-tamper: class=non-slice TIER=T3``
+line on its last line so the lane takes the class and the risk tier from the
+trusted gate output instead of deriving them from a branch name.
+
+**Risk tier (T1/T3).**  After resolving the base and the head the gate reads the
+pull request's changed paths from ``<merge-base(base, head)>...<head>`` and
+classifies the change as **T3** (touches machinery or test infrastructure) or
+**T1** (everything else).  T3 is the fail-closed tier: a change the step cannot
+read is T3.
+
+T3 paths and changes:
+
+* ``.github/**`` -- workflows and CI scripts;
+* gate/lane scripts -- the shared ``sensitive_paths()`` list (``gate/``,
+  ``gates/``, ``policy/``, ``.rizzstack/`` and any file-name token
+  ``gate``/``gates``/``lane``/``lanes``);
+* the lease/contract store -- ``.rizzstack/leases/**``,
+  ``.rizzstack/contracts/**`` and ``.rizzstack/lease.json``; and any
+  ``contract/``/``contracts/`` directory (a frozen contract is approval
+  machinery wherever it lives) or ``*.contract.json`` document;
+* any ``conftest.py`` anywhere;
+* **edits to existing tests** -- a modified, deleted or renamed test file.  A
+  newly added test file is T1: new coverage is not a change to the tests that
+  already judge the change;
+* pytest and coverage configuration -- ``pytest.ini``, ``tox.ini``,
+  ``noxfile.py``, ``.coveragerc``/``coverage.ini``, and the ``[tool.pytest*]``
+  / ``[tool.coverage*]`` tables of ``pyproject.toml``, judged by parsing the
+  base and the head document with ``tomllib`` (a parse failure on either side
+  is T3), never by matching added lines;
+* entry points -- ``[project.entry-points*]``, ``[project.scripts]`` and
+  ``[project.gui-scripts]`` changes, parsed the same way;
+* packaging that ships runtime schemas -- a ``pyproject.toml`` build table
+  (``[tool.hatch.build*]``, ``[tool.setuptools*]``, ``[tool.poetry]`` ...),
+  ``setup.py``, ``setup.cfg`` or ``MANIFEST.in`` change whose before/after
+  differs on an entry that names a schema (``schema`` or a ``*.json`` glob);
+* deploy configuration -- ``deploy/**``, ``contrib/systemd/**``,
+  ``Dockerfile*``, ``docker-compose*``, ``*.service``, ``k8s/**``,
+  ``helm/**``, ``charts/**``, ``Procfile``, ``fly.toml``, ``vercel.json``,
+  ``netlify.toml``, ``render.yaml``;
+* any scanner finding -- a test-subversion shape on an added line of a scanned
+  file (``pytest_plugins =``, ``addopts`` with ``-p``/``--plugin``,
+  ``_exit(``, ``atexit.register(``, a ``pytest_*`` hook definition, a patched
+  ``AssertionError`` or ``unittest.TestCase.assert*``) and the path kinds
+  (``conftest.py``, ``sitecustomize.py``, ``usercustomize.py``, ``*.pth``).
+
+The tier is printed on the class line as ``TIER=T1`` or ``TIER=T3`` and the
+reasons precede it on a ``lease-tamper: tier:`` line.  The step never fails a
+run by itself: an unreadable tier is reported as T3 and the gate continues.
 
 The verify boundary is, in order: ``--verify-sha`` (a local/test argument, never
 a pull-request input), the base-branch lease's
@@ -134,6 +179,7 @@ The event path defaults to ``$GITHUB_EVENT_PATH``.  For local/test runs:
 from __future__ import annotations
 
 import argparse
+import configparser
 import fnmatch
 import hashlib
 import json
@@ -142,6 +188,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -665,12 +712,16 @@ class GateError(RuntimeError):
     ``reason`` is a stable, named machine-readable code for the failure.  It is
     required for merge_group failures, which must never be reported as a
     neutral/skipped conclusion: GitHub counts a neutral required check as
-    passing, so neutral would be a way around the gate.
+    passing, so neutral would be a way around the gate.  ``cls`` and ``tier``
+    are set when the failure still decides the pull request's class, so the
+    final ``class=... TIER=...`` line is printed on a refusal too.
     """
 
-    def __init__(self, message, reason=None):
+    def __init__(self, message, reason=None, cls=None, tier=None):
         super().__init__(message)
         self.reason = reason
+        self.cls = cls
+        self.tier = tier
 
 
 def merge_group_error(subtype, detail):
@@ -1140,9 +1191,10 @@ def independent_review(repo, reviews, base, head):
     return None, None, refusal
 
 
-def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
+def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None, tier=None):
     """A pull request no frozen base lease names passes only on review at head."""
     head = target.head
+    tier = tier or TIER_DEFAULT
     why = detail or "no frozen lease on base %s names it" % target.base[:12]
     if target.number is None:
         raise GateError(
@@ -1151,6 +1203,8 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
             "review. Pass --pull-request <N> with GITHUB_REPOSITORY and GITHUB_TOKEN."
             % (why, head[:12]),
             reason="non_slice_requires_independent_review",
+            cls="non-slice",
+            tier=tier,
         )
     name = (environ.get("GITHUB_REPOSITORY") or "").strip()
     token = (environ.get("GITHUB_TOKEN") or environ.get("GH_TOKEN") or "").strip()
@@ -1161,6 +1215,8 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
             "required to read the reviews; failing closed without them."
             % (target.number, why, head[:12]),
             reason="non_slice_requires_independent_review",
+            cls="non-slice",
+            tier=tier,
         )
     reviews = _pull_reviews(name, target.number, token, _api_url(environ), http)
     review, match, carry_info = independent_review(repo, reviews, target.base, head)
@@ -1180,6 +1236,8 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
                     head[:12],
                 ),
                 reason="non_slice_requires_independent_review",
+                cls="non-slice",
+                tier=tier,
             )
         if carry_info is not None:
             raise GateError(
@@ -1200,6 +1258,8 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
                     head[:12],
                 ),
                 reason="non_slice_requires_independent_review",
+                cls="non-slice",
+                tier=tier,
             )
         raise GateError(
             "PR #%s is not a slice (%s). A non-slice pull request passes only with an "
@@ -1208,6 +1268,8 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
             "with commit_id equal to the head. None found. Post the review at %s and "
             "re-run." % (target.number, why, head[:12], head[:12]),
             reason="non_slice_requires_independent_review",
+            cls="non-slice",
+            tier=tier,
         )
     if not quiet:
         state = str(review.get("state") or "COMMENTED").upper()
@@ -1230,7 +1292,7 @@ def check_non_slice(repo, target, environ, quiet=False, http=None, detail=None):
                 "lease-tamper: OK: PR #%s is not a slice (%s) and carries an independent "
                 "review (%s) at head %s." % (target.number, why, state, head[:12])
             )
-    print("lease-tamper: class=non-slice")
+    print(class_line("non-slice", tier))
     return 0
 
 
@@ -1850,6 +1912,442 @@ def render_success(contract, contract_path, boundary, boundary_kind, commits, sc
 
 
 # ---------------------------------------------------------------------------
+# risk tier step
+# ---------------------------------------------------------------------------
+
+#: Tier names.  ``T3`` is the fail-closed tier: machinery, test infrastructure,
+#: packaging that ships runtime schemas, deploy config, or any scanner finding.
+TIER_ONE = "T1"
+TIER_THREE = "T3"
+TIER_DEFAULT = TIER_THREE
+
+TIER_TEST_DIR_SEGMENTS = frozenset(("tests", "test", "__tests__", "spec", "specs"))
+TIER_TEST_NAME_PATTERNS = (
+    "test_*.py",
+    "*_test.py",
+    "test_*.js",
+    "test_*.mjs",
+    "test_*.ts",
+    "*.test.js",
+    "*.test.mjs",
+    "*.test.ts",
+    "*.test.jsx",
+    "*.test.tsx",
+    "*.spec.js",
+    "*.spec.mjs",
+    "*.spec.ts",
+    "*.spec.jsx",
+    "*.spec.tsx",
+)
+TIER_PYTEST_FILES = frozenset(("pytest.ini", "tox.ini", "noxfile.py"))
+TIER_COVERAGE_FILES = frozenset((".coveragerc", "coverage.ini", ".coveragerc.ini"))
+TIER_DEPLOY_PATTERNS = (
+    "deploy/**",
+    "deployments/**",
+    "contrib/systemd/**",
+    "*.service",
+    "Dockerfile",
+    "Dockerfile.*",
+    "docker-compose*.yml",
+    "docker-compose*.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "k8s/**",
+    "kubernetes/**",
+    "helm/**",
+    "charts/**",
+    "Procfile",
+    "fly.toml",
+    "vercel.json",
+    "netlify.toml",
+    "render.yaml",
+)
+TIER_SCAN_SUFFIXES = (".py", ".pyi", ".pth")
+TIER_SCAN_NAMES = frozenset(("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"))
+TIER_STARTUP_NAMES = frozenset(("sitecustomize.py", "usercustomize.py"))
+TIER_CONTRACT_DIRS = frozenset(("contract", "contracts"))
+#: A gate/lane *script* is code or configuration.  The shared sensitive list
+#: also matches a documentation or image file whose name carries the token
+#: (``ci-gates.md``, ``art-verify-gate.jpg``); those are documentation, not
+#: machinery, and are T1 unless a path prefix already makes them T3.
+TIER_DOC_SUFFIXES = (
+    ".md",
+    ".txt",
+    ".rst",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".webp",
+    ".pdf",
+)
+TIER_SCANNER_PATTERNS = (
+    ("pytest_plugin", re.compile(r"\bpytest_plugins\s*(?::[^=\n]+)?=")),
+    ("pytest_plugin", re.compile(r"\baddopts\s*=.*?(?:[\s\"']-p(?:\s|=|[A-Za-z_])|--plugin(?:\s|=))")),
+    ("forced_exit", re.compile(r"\b_exit\s*\(")),
+    ("atexit", re.compile(r"\batexit\s*\.\s*register\s*\(")),
+    ("pytest_hook", re.compile(r"^\s*(?:async\s+)?def\s+pytest_[A-Za-z0-9_]*\s*\(")),
+    ("patched_assertion", re.compile(r"\b(?:builtins\s*\.\s*)?AssertionError\s*=(?!=)")),
+    (
+        "patched_assertion",
+        re.compile(r"\bunittest\s*\.\s*TestCase\s*\.\s*assert[A-Za-z0-9_]*\s*=(?!=)"),
+    ),
+)
+TIER_PACKAGING_TABLES = (
+    ("build-system",),
+    ("tool", "hatch", "build"),
+    ("tool", "setuptools"),
+    ("tool", "poetry"),
+    ("tool", "flit"),
+    ("tool", "pdm", "build"),
+    ("tool", "scikit-build"),
+)
+
+
+def _tier_normalise(path):
+    normal = posixpath.normpath(str(path or "").replace("\\", "/").strip())
+    while normal.startswith("./"):
+        normal = normal[2:]
+    return normal.lstrip("/")
+
+
+def _tier_basename(path):
+    return _tier_normalise(path).rsplit("/", 1)[-1]
+
+
+def _tier_is_test_path(path):
+    normal = _tier_normalise(path).lower()
+    parts = normal.split("/")
+    if any(segment in TIER_TEST_DIR_SEGMENTS for segment in parts[:-1]):
+        return True
+    return any(fnmatch.fnmatchcase(parts[-1], pattern) for pattern in TIER_TEST_NAME_PATTERNS)
+
+
+def _tier_is_deploy_path(path):
+    normal = _tier_normalise(path).lower()
+    return any(fnmatch.fnmatchcase(normal, pattern.lower()) for pattern in TIER_DEPLOY_PATTERNS)
+
+
+def _tier_is_scanned(path):
+    base = _tier_basename(path).lower()
+    return base in TIER_SCAN_NAMES or base.endswith(TIER_SCAN_SUFFIXES)
+
+
+def _tier_blob(repo, revision, path):
+    proc = _run(repo, "show", "%s:%s" % (revision, path), check=False)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _tier_toml(text):
+    """``(document, ok)`` for pyproject text; a missing file is an empty doc."""
+    if text is None:
+        return {}, True
+    try:
+        return tomllib.loads(text), True
+    except (tomllib.TOMLDecodeError, ValueError):
+        return {}, False
+
+
+def _tier_table(document, table):
+    node = document
+    for key in table:
+        if not isinstance(node, dict) or key not in node:
+            return {}
+        node = node[key]
+    return node if isinstance(node, dict) else {}
+
+
+def _tier_flat(node, prefix):
+    flat = {}
+    if isinstance(node, dict):
+        for key in sorted(node, key=str):
+            flat.update(_tier_flat(node[key], "%s.%s" % (prefix, key)))
+    elif isinstance(node, (list, tuple)):
+        flat[prefix] = json.dumps(node, ensure_ascii=True, sort_keys=True)
+    else:
+        flat[prefix] = repr(node)
+    return flat
+
+
+def _tier_names_schema(*parts):
+    for part in parts:
+        text = str(part or "").lower()
+        if "schema" in text or ".json" in text:
+            return True
+    return False
+
+
+def _tier_packaging_changed(old_node, new_node, prefix):
+    old_flat = _tier_flat(old_node, prefix)
+    new_flat = _tier_flat(new_node, prefix)
+    for key in sorted(set(old_flat) | set(new_flat)):
+        if old_flat.get(key) == new_flat.get(key):
+            continue
+        if _tier_names_schema(key, old_flat.get(key), new_flat.get(key)):
+            return True
+    return False
+
+
+def _tier_pyproject_reasons(repo, merge_base, head, path):
+    old_doc, old_ok = _tier_toml(_tier_blob(repo, merge_base, path))
+    new_doc, new_ok = _tier_toml(_tier_blob(repo, head, path))
+    if not old_ok or not new_ok:
+        # A pyproject the step cannot parse is exactly the hidden-config shape
+        # this tier exists to catch (an unreadable table could hide addopts).
+        return ["pyproject_unparseable"]
+    reasons = []
+    if _tier_table(old_doc, ("tool", "pytest")) != _tier_table(new_doc, ("tool", "pytest")):
+        reasons.append("pytest_config")
+    if _tier_table(old_doc, ("tool", "coverage")) != _tier_table(new_doc, ("tool", "coverage")):
+        reasons.append("coverage_config")
+    for table in (
+        ("project", "entry-points"),
+        ("project", "scripts"),
+        ("project", "gui-scripts"),
+    ):
+        if _tier_table(old_doc, table) != _tier_table(new_doc, table):
+            reasons.append("entry_points")
+            break
+    for table in TIER_PACKAGING_TABLES:
+        old_node = _tier_table(old_doc, table)
+        new_node = _tier_table(new_doc, table)
+        if old_node == new_node:
+            continue
+        if _tier_packaging_changed(old_node, new_node, ".".join(table)):
+            reasons.append("packaging_schemas")
+            break
+    return reasons
+
+
+def _tier_ini_sections(text):
+    parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+    if text is None:
+        return {}, True
+    try:
+        parser.read_string(text)
+    except (configparser.Error, ValueError):
+        return {}, False
+    return {
+        section: {key: parser[section][key] for key in parser[section]}
+        for section in parser.sections()
+    }, True
+
+
+def _tier_setup_cfg_reasons(repo, merge_base, head, path):
+    old_sections, old_ok = _tier_ini_sections(_tier_blob(repo, merge_base, path))
+    new_sections, new_ok = _tier_ini_sections(_tier_blob(repo, head, path))
+    if not old_ok or not new_ok:
+        return ["config_unparseable"]
+
+    def sections_for(sections, prefixes):
+        return {
+            name: value
+            for name, value in sections.items()
+            if any(name == prefix or name.startswith(prefix + ":") or name.startswith(prefix + ".")
+                   for prefix in prefixes)
+        }
+
+    reasons = []
+    if sections_for(old_sections, ("tool:pytest",)) != sections_for(new_sections, ("tool:pytest",)):
+        reasons.append("pytest_config")
+    if sections_for(old_sections, ("coverage",)) != sections_for(new_sections, ("coverage",)):
+        reasons.append("coverage_config")
+    if sections_for(old_sections, ("options.entry_points",)) != sections_for(
+        new_sections, ("options.entry_points",)
+    ):
+        reasons.append("entry_points")
+    for prefix in ("options.package_data", "options.data_files", "options.include_package_data"):
+        if sections_for(old_sections, (prefix,)) != sections_for(new_sections, (prefix,)):
+            before = json.dumps(sections_for(old_sections, (prefix,)), sort_keys=True)
+            after = json.dumps(sections_for(new_sections, (prefix,)), sort_keys=True)
+            if _tier_names_schema(before, after):
+                reasons.append("packaging_schemas")
+            break
+    return reasons
+
+
+def _tier_line_reasons(repo, merge_base, head, path):
+    """Scanner findings on the added lines of one packaging/setup script."""
+    reasons = []
+    proc = _run(repo, "diff", "--no-renames", "--unified=0", merge_base, head, "--", path, check=False)
+    if proc.returncode != 0:
+        return reasons
+    for line in proc.stdout.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        content = line[1:]
+        for kind, _pattern in TIER_SCANNER_PATTERNS:
+            if _pattern.search(content):
+                reasons.append("scanner:%s" % kind)
+                break
+        for marker in ("schema", ".json"):
+            if marker in content.lower():
+                reasons.append("packaging_schemas")
+                break
+        if reasons:
+            break
+    return reasons
+
+
+def _tier_is_contract_path(path):
+    """True for ``contracts/**`` (any depth) and a ``*.contract.json`` file.
+
+    The lease store's own ``.rizzstack/contracts/**`` is reported as
+    ``lease_store`` before this rule runs; this rule also covers a repository's
+    top-level ``contract/``/``contracts/`` directory and frozen ACDD contract
+    documents kept elsewhere, because a contract is approval machinery wherever
+    it lives.
+    """
+    normal = _tier_normalise(path).lower()
+    parts = normal.split("/")
+    if any(segment in TIER_CONTRACT_DIRS for segment in parts[:-1]):
+        return True
+    return parts[-1].endswith(".contract.json")
+
+
+def _tier_path_reasons(repo, merge_base, head, status, path):
+    """Every T3 reason one changed path triggers (empty means T1 for it)."""
+    normal = _tier_normalise(path)
+    base = _tier_basename(normal)
+    reasons = []
+    if normal == LEASE_FILE or normal.startswith(LEASES_DIR + "/") or normal.startswith(
+        CONTRACTS_DIR + "/"
+    ):
+        return ["lease_store"]
+    if normal.startswith(".github/"):
+        reasons.append("github")
+    if base == "conftest.py":
+        reasons.append("conftest")
+    if base in TIER_STARTUP_NAMES:
+        reasons.append("startup_hook")
+    if normal.endswith(".pth"):
+        reasons.append("pth_file")
+    if base in TIER_PYTEST_FILES:
+        reasons.append("pytest_config")
+    if base in TIER_COVERAGE_FILES:
+        reasons.append("coverage_config")
+    if base == "pyproject.toml":
+        reasons.extend(_tier_pyproject_reasons(repo, merge_base, head, normal))
+    elif base == "setup.cfg":
+        reasons.extend(_tier_setup_cfg_reasons(repo, merge_base, head, normal))
+    elif base in ("setup.py", "MANIFEST.in"):
+        reasons.extend(_tier_line_reasons(repo, merge_base, head, normal))
+    if _tier_is_test_path(normal) and status.upper() != "A":
+        reasons.append("existing_test_edit")
+    if _tier_is_deploy_path(normal):
+        reasons.append("deploy_config")
+    if _tier_is_contract_path(normal):
+        reasons.append("contracts")
+    if not reasons and sensitive_paths([normal]):
+        # The shared list matches by explicit path, by prefix (machinery
+        # directories, always T3) and by a file-name token.  A token match on a
+        # documentation or image file (``ci-gates.md``) is documentation, not a
+        # gate script; a prefix match under .github/policy/gate stays T3.
+        by_prefix = normal in SENSITIVE_PATHS or any(
+            normal == prefix.rstrip("/") or normal.startswith(prefix)
+            for prefix in SENSITIVE_PREFIXES
+        )
+        if by_prefix or not normal.lower().endswith(TIER_DOC_SUFFIXES):
+            reasons.append("gate_lane_script")
+    # Preserve order, drop duplicates.
+    return list(dict.fromkeys(reasons))
+
+
+def _tier_diff(repo, merge_base, head):
+    proc = _run(
+        repo, "diff", "--name-status", "-z", "--no-renames", merge_base, head, check=False
+    )
+    if proc.returncode != 0:
+        raise GateError("cannot read the change between %s and %s" % (merge_base[:12], head[:12]))
+    fields = [field for field in proc.stdout.split("\0")]
+    changes = []
+    index = 0
+    while index + 1 < len(fields):
+        status, path = fields[index], fields[index + 1]
+        index += 2
+        if not status or not path:
+            continue
+        changes.append((status, _tier_normalise(path)))
+    return changes
+
+
+def _tier_added_lines(repo, merge_base, head):
+    proc = _run(
+        repo,
+        "diff",
+        "--no-renames",
+        "--unified=0",
+        "--no-color",
+        merge_base,
+        head,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise GateError("cannot read the added lines between %s and %s" % (merge_base[:12], head[:12]))
+    path = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("+++ "):
+            target = line[4:].strip()
+            path = target[2:] if target.startswith("b/") else None
+            continue
+        if line.startswith("+") and path and not line.startswith("+++"):
+            yield path, line[1:]
+
+
+def risk_tier(repo, base, head):
+    """``(tier, [(reason, path), ...])`` for the change between base and head.
+
+    Reads the changed paths of ``<merge-base>...<head>`` (three-dot: only what
+    the change introduces) plus the added lines of scanned files.  Any reason
+    makes the change T3; no reason makes it T1.  The step fails closed: a
+    history it cannot read is T3 with the ``tier_unreadable`` reason.
+    """
+    try:
+        proc = _run(repo, "merge-base", base, head, check=False)
+        merge_base = proc.stdout.strip() if proc.returncode == 0 else base
+        reasons = []
+
+        def add(reason, path=None):
+            item = (reason, path or "")
+            if item not in reasons:
+                reasons.append(item)
+
+        for status, path in _tier_diff(repo, merge_base, head):
+            for reason in _tier_path_reasons(repo, merge_base, head, status, path):
+                add(reason, path)
+        for path, content in _tier_added_lines(repo, merge_base, head):
+            if not _tier_is_scanned(path):
+                continue
+            for kind, pattern in TIER_SCANNER_PATTERNS:
+                if pattern.search(content):
+                    add("scanner:%s" % kind, _tier_normalise(path))
+                    break
+        return (TIER_THREE if reasons else TIER_ONE), reasons
+    except Exception:  # noqa: BLE001 - the tier must never fail the gate
+        # Fail closed on the TIER (T3) and open on the RUN (the gate continues):
+        # a history the step cannot read is exactly the case a reviewer must see,
+        # and an exception here would turn a lease decision into a crash.
+        return TIER_THREE, [("tier_unreadable", "")]
+
+
+def class_line(class_name, tier):
+    """The gate's final line: the class next to the risk tier."""
+    return "lease-tamper: class=%s TIER=%s" % (class_name, tier or TIER_DEFAULT)
+
+
+def render_tier_reasons(tier, reasons, limit=8):
+    """The line before the class line, naming why a change is T3."""
+    if tier != TIER_THREE or not reasons:
+        return None
+    shown = [
+        "%s:%s" % (reason, path) if path else reason for reason, path in reasons[:limit]
+    ]
+    more = "" if len(reasons) <= limit else " (+%d more)" % (len(reasons) - limit)
+    return "lease-tamper: tier: T3 because %s%s" % (", ".join(shown), more)
+
+
+# ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 
@@ -1870,6 +2368,8 @@ def main(argv=None, environ=None):
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
+    tier = TIER_DEFAULT
+    tier_reasons = [("tier_unreadable", "")]
     try:
         labels = [item for item in (args.labels or "").split(",") if item.strip()]
         body = args.body or ""
@@ -1915,20 +2415,36 @@ def main(argv=None, environ=None):
                 % target.head
             )
 
+        # The risk tier is read from the changed paths alone: it must not depend
+        # on the lease, the review or the event, or a pull request could change
+        # its own tier.  A tier the step cannot read is T3 (fail closed) and
+        # never fails the run by itself.
+        tier, tier_reasons = risk_tier(args.repo, target.base, target.head)
+        note = render_tier_reasons(tier, tier_reasons)
+        if note and not args.quiet:
+            print(note)
+
         changes = metadata_changes(args.repo, target)
         if changes and not args.contract:
             detail = "it changes gate metadata (%s), which is landed only through a " \
                      "reviewed non-slice pull request" % ", ".join(changes)
             if not args.quiet:
                 print("lease-tamper: NOT A SLICE: %s." % detail)
-            return check_non_slice(args.repo, target, environ, quiet=args.quiet, detail=detail)
+            return check_non_slice(
+                args.repo,
+                target,
+                environ,
+                quiet=args.quiet,
+                detail=detail,
+                tier=tier,
+            )
 
         try:
             contract, contract_path, lease_doc, _revision = resolve_contract(
                 args.repo, target, args.contract
             )
         except NoSliceLease:
-            return check_non_slice(args.repo, target, environ, quiet=args.quiet)
+            return check_non_slice(args.repo, target, environ, quiet=args.quiet, tier=tier)
         if args.verify_sha:
             args.verify_sha = _resolve_rev(args.repo, args.verify_sha)
         findings, boundary, boundary_kind, commits, scope = check(
@@ -1937,10 +2453,11 @@ def main(argv=None, environ=None):
         if findings:
             print(render_failure(findings, boundary, boundary_kind, contract, contract_path, target.head))
             print("::error::lease-tamper: %d lease/frozen-test violation(s); see the log above." % len(findings))
+            print(class_line("slice", tier))
             return 1
         if not args.quiet:
             print(render_success(contract, contract_path, boundary, boundary_kind, commits, scope, target.head))
-        print("lease-tamper: class=slice")
+        print(class_line("slice", tier))
         return 0
     except GateError as exc:
         if exc.reason:
@@ -1952,6 +2469,10 @@ def main(argv=None, environ=None):
         else:
             print("lease-tamper: FAILED: %s" % exc)
             print("::error::lease-tamper: %s" % str(exc).replace("\n", " "))
+        if exc.cls:
+            print(class_line(exc.cls, exc.tier or tier))
+        elif tier is not None:
+            print("lease-tamper: gate: TIER=%s" % (exc.tier or tier))
         return 1
     except subprocess.TimeoutExpired:
         print("lease-tamper: FAILED: git did not finish within the timeout; failing closed.")
