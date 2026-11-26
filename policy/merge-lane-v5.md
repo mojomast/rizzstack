@@ -39,7 +39,9 @@ Input (`--facts facts.json`):
          "merge_state_status": "CLEAN", "head": "<40-hex>", "files": ["..."]},
   "class": "slice" | "non-slice" | null,
   "reviews": [{"state": "...", "commit_id": "<40-hex>", "body": "...", "author": "..."}],
-  "checks": [{"name": "...", "status": "completed", "conclusion": "success", "head": "<40-hex>"}],
+  "checks": [{"name": "...", "status": "completed", "conclusion": "success",
+              "head": "<40-hex>", "completed_at": "<ISO-8601>"}],
+  "required_checks": ["ci-gate"],
   "verify": {"records": [{"record": "...", "sha": "<40-hex>", "ok": true}],
              "compare": {"<sha>": {"status": "ahead", "files": ["..."] | null}}},
   "owner_held": false
@@ -52,41 +54,50 @@ The module returns `{"merge": bool, "class": ..., "reason": ..., "verify":
 Rules enforced in code:
 
 - **Review** — GitHub `APPROVED`, or `COMMENTED` whose first non-empty line
-  starts `APPROVE` (not `APPROVED`, not `APPROVE?`) and names an `independent
-  review`, with `commit_id` equal to the head. A review at an older head is
-  `review_at_older_head`; a `CHANGES_REQUESTED` review at the head — formal
-  state or the textual `CHANGES REQUESTED` convention — always blocks.
+  is the attestation form `APPROVE (independent review ...)` (markdown bold
+  allowed; `APPROVED`, `APPROVE?` and `APPROVE (not an independent review)`
+  do not qualify), with `commit_id` equal to the head. A review at an older
+  head is `review_at_older_head`; a `CHANGES_REQUESTED` review at the head —
+  formal state or the textual `CHANGES REQUESTED` convention — always blocks.
+  Reviewer independence is the reviewing agent's attestation: on this
+  single-maintainer account every review is posted by the same GitHub login,
+  so login equality cannot be used as the test.
 - **Checks** — every check carries a name and the exact head it ran against;
   an unnamed or unattributed entry is not evidence (`checks_invalid`,
-  `checks_unattributed`). Every newest run per name is
-  `SUCCESS`/`NEUTRAL`/`SKIPPED` at the head, selected by its ISO timestamp
-  (list order is only the fallback), so a reversed list cannot resurrect a
-  stale success. A green run at an older sha does not count. No checks is
-  `checks_missing` (fail closed), never "green by absence".
+  `checks_unattributed`). `required_checks` must explicitly list the names
+  that gate the repo (the aggregate `ci-gate` is the ruleset's required
+  check); a required name absent at the head is `checks_missing`, never
+  "green by absence". Duplicate names must be ordered by distinct valid
+  ISO-8601 timestamps; missing or equal timestamps are `checks_ambiguous`
+  (list order is never a tie-breaker), so a reversed list cannot resurrect a
+  stale success. A green run at an older sha does not count.
 - **Verify (slices only)** — an `ok` record at the exact head, or an ancestor
   record with no changed file in common with the PR's file list. A record at
   the exact head that is not `ok` is `verify_failed_at_head` and is not
-  rescued by an older blob match. A `files: null` compare means identical
-  trees; a 300-entry (truncated) compare is `verify_blob_check_inconclusive`
+  rescued by an older blob match. The compare entry must carry the `files`
+  key: explicit `null` means identical trees; a missing key, a non-string
+  member, or a 300-entry (truncated) list is `verify_blob_check_inconclusive`
   unless another candidate proves equality.
 - **Owner gate** — `owner_held` must be explicitly `false`; true is
   `owner_gate` and an absent/unknown value is `owner_gate_unknown`. It blocks
   both classes before anything else.
 - **Shape** — `pr.files` must be a list of paths (`files_invalid` otherwise);
-  `pr.is_draft` and `pr.mergeable` must be explicit (`false` / `true` or
-  `MERGEABLE`); non-object facts are `facts_invalid`.
+  `pr.is_draft` must be explicit `false` and `pr.mergeable` explicit `true`
+  or `MERGEABLE`; `reviews` must be a list; non-object facts are
+  `facts_invalid`; duplicate JSON keys in the facts file are refused.
 
 Reason codes: `owner_gate`, `owner_gate_unknown`, `facts_invalid`,
 `pr_not_open`, `pr_draft`, `pr_not_mergeable`, `merge_state_<state>`,
 `head_missing`, `files_invalid`, `class_unknown`, `checks_missing`,
 `checks_pending`, `checks_failed`, `checks_invalid`, `checks_unattributed`,
+`checks_ambiguous`, `required_checks_missing`, `reviews_invalid`,
 `review_missing`, `review_at_older_head`, `review_changes_requested`,
 `verify_evidence_missing`, `verify_failed_at_head`, `verify_at_older_head`,
 `verify_blob_check_inconclusive`, `reviewed`.
 
 ## Rollout
 
-1. This PR lands the decision core, the policy and 32 tests for both classes.
+1. This PR lands the decision core, the policy and 43 tests for both classes.
 2. An independent review at the PR head is required before merge (the PR is
    non-slice: no frozen lease names it).
 3. After the merge, the coordinator updates the live

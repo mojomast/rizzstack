@@ -47,8 +47,9 @@ RED_CONCLUSIONS = (
     "STARTUP_FAILURE",
     "STALE",
 )
-APPROVE_LINE = re.compile(r"(?i)^\W*APPROVE(?![A-Za-z?])")
+APPROVE_LINE = re.compile(r"(?i)^\W*APPROVE\W*\(\s*independent\s+review\b")
 CHANGES_LINE = re.compile(r"(?i)^\W*CHANGES\s+REQUESTED\b")
+STAMP_LINE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 INDEPENDENT = re.compile(r"(?i)\bindependent\s+review\b")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -126,45 +127,45 @@ def review_refusal(reviews, head):
 def _check_stamp(check):
     for key in ("completed_at", "completedAt", "started_at", "startedAt"):
         value = check.get(key)
-        if isinstance(value, str) and value:
-            return value
+        if isinstance(value, str) and STAMP_LINE.fullmatch(value.strip()):
+            return value.strip()
     return None
 
 
-def _newer(candidate, incumbent):
-    """True when ``candidate`` is the newer run of the same check name.
+def _newest_check(entries):
+    """The single newest entry, or ``(None, 'checks_ambiguous')``.
 
-    ISO-8601 timestamps compare lexicographically. When neither entry carries
-    one, the later list entry wins (the lane appends oldest to newest). A
-    timestamped entry always beats an undated one, so a reversed list cannot
-    resurrect a stale failure or hide a newer one.
+    Two entries for one name must be ordered by distinct, valid ISO-8601
+    timestamps. Missing or equal timestamps are ambiguous and fail closed;
+    list order is never used to break a tie.
     """
-    if incumbent is None:
-        return True
-    left, right = _check_stamp(candidate), _check_stamp(incumbent)
-    if left is not None and right is not None:
-        return left >= right
-    if left is not None:
-        return True
-    if right is not None:
-        return False
-    return True
+    if len(entries) == 1:
+        return entries[0], None
+    stamps = [_check_stamp(entry) for entry in entries]
+    if any(stamp is None for stamp in stamps) or len(set(stamps)) != len(stamps):
+        return None, "checks_ambiguous"
+    valid = [stamp for stamp in stamps if stamp is not None]
+    return entries[stamps.index(max(valid))], None
 
 
-def checks_state(checks, head):
+def checks_state(checks, head, required_checks):
     """``(ok, reason)`` for the newest run per check name at ``head``.
 
     Every check must name a check and carry the exact head it ran against;
-    an unnamed or unattributed entry is not evidence. The newest run per name
-    is selected by its ISO timestamp, falling back to list order. No checks at
-    all fails closed.
+    an unnamed or unattributed entry is not evidence. Duplicate names must be
+    ordered by distinct valid timestamps (no list-order fallback). Every name
+    in ``required_checks`` must be present and green at the head -- a missing
+    required check is a refusal, never "green by absence".
     """
     wanted = _sha(head)
     if wanted is None:
         return False, "checks_missing"
     if not isinstance(checks, (list, tuple)):
         return False, "checks_invalid"
-    newest = {}
+    if (not isinstance(required_checks, (list, tuple)) or not required_checks
+            or any(not isinstance(name, str) or not name.strip() for name in required_checks)):
+        return False, "required_checks_missing"
+    by_name = {}
     for check in checks:
         if not isinstance(check, dict):
             return False, "checks_invalid"
@@ -176,9 +177,17 @@ def checks_state(checks, head):
             return False, "checks_unattributed"
         if check_head != wanted:
             continue
-        if _newer(check, newest.get(name)):
-            newest[name] = check
-    if not newest:
+        by_name.setdefault(name, []).append(check)
+    if not by_name:
+        return False, "checks_missing"
+    newest = {}
+    for name, entries in by_name.items():
+        chosen, reason = _newest_check(entries)
+        if chosen is None:
+            return False, reason
+        newest[name] = chosen
+    missing = [name.strip() for name in required_checks if name.strip() not in newest]
+    if missing:
         return False, "checks_missing"
     failed = False
     pending = False
@@ -233,16 +242,20 @@ def verify_at_head(records, compare, head, files):
             continue
         if _text(entry.get("status")).lower() not in ("ahead", "identical"):
             continue
+        if "files" not in entry:
+            inconclusive = True
+            continue
         changed = entry.get("files")
         if changed is None:
             return True, "verify_blob_equal", "blob"
-        if not isinstance(changed, list):
+        if (not isinstance(changed, list)
+                or any(not isinstance(name, str) or not name for name in changed)):
             inconclusive = True
             continue
         if len(changed) >= 300:
             inconclusive = True
             continue
-        if pr_files.intersection(f for f in changed if isinstance(f, str)):
+        if pr_files.intersection(changed):
             continue
         return True, "verify_blob_equal", "blob"
     if inconclusive:
@@ -294,12 +307,16 @@ def decide(facts):
     if pull_class not in (SLICE, NON_SLICE):
         return refuse("class_unknown")
 
-    ok, reason = checks_state(facts.get("checks") or [], head)
+    reviews = facts.get("reviews")
+    if not isinstance(reviews, (list, tuple)):
+        return refuse("reviews_invalid")
+
+    ok, reason = checks_state(facts.get("checks") or [], head, facts.get("required_checks"))
     if not ok:
         return refuse(reason)
 
-    if independent_review_at_head(facts.get("reviews") or [], head) is None:
-        return refuse(review_refusal(facts.get("reviews") or [], head))
+    if independent_review_at_head(reviews, head) is None:
+        return refuse(review_refusal(reviews, head))
 
     if pull_class == SLICE:
         verify_facts = facts.get("verify")
@@ -320,16 +337,25 @@ def decide(facts):
     return verdict
 
 
+def _no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key: %s" % key)
+        result[key] = value
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Apply the merge-lane v5 slice/non-slice policy.")
     parser.add_argument("--facts", default="-", help="facts JSON file, or '-' for stdin")
     args = parser.parse_args(argv)
     try:
         if args.facts == "-":
-            facts = json.load(sys.stdin)
+            facts = json.load(sys.stdin, object_pairs_hook=_no_duplicate_keys)
         else:
             with open(args.facts, encoding="utf-8") as handle:
-                facts = json.load(handle)
+                facts = json.load(handle, object_pairs_hook=_no_duplicate_keys)
     except (OSError, ValueError) as exc:
         print(json.dumps({"merge": False, "reason": "facts_unreadable", "error": type(exc).__name__}))
         return 2

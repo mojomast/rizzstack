@@ -51,6 +51,7 @@ def facts(**overrides):
             {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD},
             {"name": "gitleaks", "status": "completed", "conclusion": "success", "head": HEAD},
         ],
+        "required_checks": ["ci-gate"],
         "verify": {"records": [], "compare": {}},
         "owner_held": False,
     }
@@ -102,7 +103,7 @@ class NonSliceTests(unittest.TestCase):
         self.assertEqual(verdict["reason"], "review_changes_requested")
 
     def test_github_approved_state_at_head_passes(self):
-        value = facts(reviews=[approve(state="APPROVED")])
+        value = facts(reviews=[{"state": "APPROVED", "commit_id": HEAD, "body": ""}])
         verdict = lane.decide(value)
         self.assertTrue(verdict["merge"], verdict)
 
@@ -114,6 +115,14 @@ class NonSliceTests(unittest.TestCase):
 
     def test_approve_question_is_not_an_approval(self):
         value = facts(reviews=[approve(body="APPROVE? NO - not an independent review")])
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_a_denial_is_not_an_approval(self):
+        value = facts(reviews=[approve(body="APPROVE (not an independent review at %s)" % HEAD)])
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_commented_approved_word_is_not_an_approval(self):
+        value = facts(reviews=[approve(body="APPROVED (independent review at %s)" % HEAD)])
         self.assertEqual(lane.decide(value)["reason"], "review_missing")
 
     def test_textual_changes_requested_at_head_blocks(self):
@@ -212,6 +221,37 @@ class SliceTests(unittest.TestCase):
         self.assertTrue(verdict["merge"], verdict)
         self.assertEqual(verdict["verify"], "blob")
 
+    def test_slice_exact_verify_with_review_at_an_older_head_refuses(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {"records": [verify()], "compare": {}}
+        value["reviews"] = [approve(OLDER)]
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "review_at_older_head")
+
+    def test_slice_explicit_null_compare_proves_identical_trees(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(OLDER)],
+            "compare": {OLDER: {"status": "identical", "files": None}},
+        }
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["verify"], "blob")
+
+    def test_slice_compare_without_a_files_key_is_inconclusive(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(OLDER)],
+            "compare": {OLDER: {"status": "ahead"}},
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_blob_check_inconclusive")
+
     def test_slice_still_needs_the_review(self):
         value = facts(reviews=[])
         value["class"] = lane.SLICE
@@ -260,16 +300,44 @@ class GateTests(unittest.TestCase):
     def test_newest_run_per_check_name_wins(self):
         # An old failure is superseded by a newer success on the same name.
         green = facts(checks=[
-            {"name": "ci-gate", "status": "completed", "conclusion": "failure", "head": HEAD},
-            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD},
+            {"name": "ci-gate", "status": "completed", "conclusion": "failure", "head": HEAD,
+             "completed_at": "2026-11-26T00:10:00Z"},
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD,
+             "completed_at": "2026-11-26T00:20:00Z"},
         ])
         # A newer pending run supersedes an old success.
         pending = facts(checks=[
-            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD},
-            {"name": "ci-gate", "status": "in_progress", "conclusion": None, "head": HEAD},
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD,
+             "completed_at": "2026-11-26T00:10:00Z"},
+            {"name": "ci-gate", "status": "in_progress", "conclusion": None, "head": HEAD,
+             "completed_at": "2026-11-26T00:20:00Z"},
         ])
         self.assertTrue(lane.decide(green)["merge"])
         self.assertEqual(lane.decide(pending)["reason"], "checks_pending")
+
+    def test_duplicate_check_names_without_distinct_timestamps_are_ambiguous(self):
+        undated = facts(checks=[
+            {"name": "ci-gate", "status": "completed", "conclusion": "failure", "head": HEAD},
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD},
+        ])
+        equal = facts(checks=[
+            {"name": "ci-gate", "status": "completed", "conclusion": "failure", "head": HEAD,
+             "completed_at": "2026-11-26T00:10:00Z"},
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD,
+             "completed_at": "2026-11-26T00:10:00Z"},
+        ])
+        self.assertEqual(lane.decide(undated)["reason"], "checks_ambiguous")
+        self.assertEqual(lane.decide(equal)["reason"], "checks_ambiguous")
+
+    def test_a_required_check_missing_at_head_refuses(self):
+        value = facts(checks=[
+            {"name": "gitleaks", "status": "completed", "conclusion": "success", "head": HEAD}])
+        self.assertEqual(lane.decide(value)["reason"], "checks_missing")
+
+    def test_required_checks_fact_must_be_explicit(self):
+        value = facts()
+        del value["required_checks"]
+        self.assertEqual(lane.decide(value)["reason"], "required_checks_missing")
 
     def test_newest_check_uses_timestamps_not_list_order(self):
         reversed_failure = facts(checks=[
@@ -298,6 +366,18 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             lane.decide(facts(pr={"merge_state_status": "DIRTY"}))["reason"], "merge_state_dirty")
         self.assertTrue(lane.decide(facts(pr={"merge_state_status": "BEHIND"}))["merge"])
+
+    def test_absent_mergeable_or_draft_key_refuses(self):
+        value = facts()
+        del value["pr"]["mergeable"]
+        self.assertEqual(lane.decide(value)["reason"], "pr_not_mergeable")
+        value = facts()
+        del value["pr"]["is_draft"]
+        self.assertEqual(lane.decide(value)["reason"], "pr_draft")
+
+    def test_reviews_must_be_a_list(self):
+        self.assertEqual(lane.decide(facts(reviews=1))["reason"], "reviews_invalid")
+        self.assertEqual(lane.decide(facts(reviews=None))["reason"], "reviews_invalid")
 
     def test_files_must_be_a_list_of_paths(self):
         self.assertEqual(lane.decide(facts(pr={"files": "a.py"}))["reason"], "files_invalid")
@@ -330,6 +410,14 @@ class CommandLineTests(unittest.TestCase):
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(json.loads(proc.stdout)["merge"])
+
+    def test_cli_refuses_duplicate_json_keys(self):
+        payload = json.dumps(facts())[:-1] + ', "owner_held": false}'
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT)], input=payload,
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "facts_unreadable")
 
 
 if __name__ == "__main__":
