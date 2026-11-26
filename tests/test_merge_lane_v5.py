@@ -7,11 +7,17 @@ Neither class may merge on the other class's evidence, and the class must come
 from the lease/tamper classifier -- an unknown class fails closed.
 """
 
+import hashlib
+import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +28,25 @@ import merge_lane_v5 as lane  # noqa: E402
 
 HEAD = "a" * 40
 OLDER = "b" * 40
+BASE = "c" * 40
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+#: sha256 of the shared policy block and the shared fixtures.  The lease/tamper
+#: gate (workflow, vendored into hyvv) asserts the same values, so the two
+#: copies cannot drift silently.
+SHARED_POLICY_SHA256 = "f749821a6170379743a7e440edcb0d90141de8d04bf22ef9a3b6d28a78b83ec8"
+REVIEW_LINES_SHA256 = "ac2de684dd22fceed5aa2f18ac6d7d6f8c101c0fd67a619d2a2c6a663642311b"
+CARRY_FIXTURES_SHA256 = "33435d738b84742c8e2b5cfa3e153cf20921fb7a1985f808bbde68603941165e"
+SHARED_BLOCK_BEGIN = "# --- BEGIN SHARED GATE POLICY"
+SHARED_BLOCK_END = "# --- END SHARED GATE POLICY -------------------------------------------------"
+
+
+def shared_policy_block():
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index(SHARED_BLOCK_BEGIN)
+    end = text.index(SHARED_BLOCK_END) + len(SHARED_BLOCK_END)
+    return text[start:end]
 
 
 def approve(head=HEAD, state="COMMENTED", body=None):
@@ -521,6 +546,11 @@ class LeaseTamperGateTests(unittest.TestCase):
     def test_green_gate_merges(self):
         self.assertTrue(lane.decide(facts())["merge"])
 
+    def test_a_failed_gate_is_not_masked_by_an_unknown_class(self):
+        value = facts(lease_tamper=gate_record(ok=False))
+        value["class"] = None
+        self.assertEqual(lane.decide(value)["reason"], "lease_tamper_failed")
+
     def test_refusal_names_the_gate_reason(self):
         verdict = lane.decide(facts(lease_tamper=gate_record(ok=False)))
         self.assertEqual(verdict["reason"], "lease_tamper_failed")
@@ -646,13 +676,28 @@ class LeaseTamperRunnerTests(unittest.TestCase):
         self.assertEqual(record["reason"], "gate_failed")
         self.assertEqual(record["script_sha"], failing_sha)
 
-    def test_missing_gate_ref_is_not_green_by_absence(self):
+    def test_a_gate_ref_other_than_origin_main_is_refused(self):
         record = lane.run_lease_tamper(
             str(self.repo), self.head_sha, base=self.main_sha,
             script_ref="origin/dead", fetch=False)
         self.assertFalse(record["ran"], record)
         self.assertFalse(record["ok"], record)
+        self.assertEqual(record["reason"], "gate_ref_not_pinned")
+
+    def test_an_unresolvable_pinned_ref_is_not_green_by_absence(self):
+        record = lane.run_lease_tamper(
+            str(self.repo), self.head_sha, base=self.main_sha,
+            script_ref="origin/dead", fetch=False, allow_unpinned=True)
+        self.assertFalse(record["ran"], record)
+        self.assertFalse(record["ok"], record)
         self.assertEqual(record["reason"], "gate_ref_unresolved")
+
+    def test_the_pinned_gate_sha_is_recorded(self):
+        record = lane.run_lease_tamper(
+            str(self.repo), self.head_sha, base=self.main_sha, fetch=False)
+        self.assertTrue(record["ran"], record)
+        self.assertEqual(record["script_sha"], self.main_sha)
+        self.assertTrue(record["script_blob"], record)
 
 
 class ReviewCarryMeasurementTests(unittest.TestCase):
@@ -792,46 +837,42 @@ class ReviewCarryMeasurementTests(unittest.TestCase):
             "checks": [{"name": "ci-gate", "status": "completed",
                         "conclusion": "success", "head": head}],
             "required_checks": ["ci-gate"],
+            "lease_tamper": gate_record(),
             "owner_held": False,
         }
 
-    def _run_cli(self, payload):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "facts.json"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            return subprocess.run(
-                [sys.executable, str(SCRIPT), "--facts", str(path),
-                 "--repo", str(self.repo), "--gate-ref", "origin/main"],
-                capture_output=True, text=True, timeout=60)
+    def _measured_decide(self, payload):
+        """What main() does after collecting facts: measure the carry, decide."""
+        payload["review_carry"] = lane.measure_review_carry_facts(
+            str(self.repo), payload["pr"], payload["reviews"])
+        return lane.decide(
+            payload, lambda older, newer: lane._is_ancestor(str(self.repo), older, newer))
 
-    def test_cli_measures_the_carry_itself_and_merges(self):
+    def test_main_measures_the_carry_and_merges(self):
         new_base = self._advance_base()
         head = self._merge()
 
-        proc = self._run_cli(self._facts_payload(head, new_base))
+        verdict = self._measured_decide(self._facts_payload(head, new_base))
 
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        verdict = json.loads(proc.stdout)
         self.assertEqual(verdict["review"], "carried")
         self.assertTrue(verdict["merge"], verdict)
 
-    def test_cli_overwrites_a_caller_supplied_carry_record(self):
-        # A facts file may not vouch for a review: main() re-measures and the
-        # authored commit wins over the claimed "ok".
+    def test_a_caller_supplied_carry_record_cannot_vouch_for_a_review(self):
+        # main() re-measures and the authored commit wins over the claimed "ok".
         self._write("src/slice.py", "changed after the review\n")
         head = self._commit("authored after the review")
         payload = self._facts_payload(head, self.base)
         payload["review_carry"] = carry(self.reviewed)
 
-        proc = self._run_cli(payload)
+        verdict = self._measured_decide(payload)
 
-        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        verdict = json.loads(proc.stdout)
         self.assertEqual(verdict["reason"], "review_carry_authored_commit")
         self.assertIsNone(verdict["review"])
 
 
 class CommandLineTests(unittest.TestCase):
+    """The CLI is a replay tool for recorded facts; the live path fetches."""
+
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
@@ -854,12 +895,13 @@ class CommandLineTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def _run(self, payload):
+    def _run(self, payload, extra=()):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "facts.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--facts", str(path), "--repo", str(self.repo)],
+                [sys.executable, str(SCRIPT), "--facts", str(path),
+                 "--repo", str(self.repo), *extra],
                 capture_output=True, text=True, timeout=60)
 
     def test_cli_exit_zero_on_merge_and_one_on_refusal(self):
@@ -870,33 +912,39 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(refused.returncode, 1, refused.stderr)
         self.assertEqual(json.loads(refused.stdout)["reason"], "review_missing")
 
-    def test_cli_reads_stdin_by_default(self):
+    def test_cli_reads_facts_from_stdin_with_dash(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            [sys.executable, str(SCRIPT), "--facts", "-", "--repo", str(self.repo)],
             input=json.dumps(facts()),
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(json.loads(proc.stdout)["merge"])
 
-    def test_cli_runs_the_gate_even_when_the_facts_omit_it(self):
+    def test_replay_refuses_when_the_facts_omit_the_gate(self):
         payload = facts()
         del payload["lease_tamper"]
         proc = self._run(payload)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue(json.loads(proc.stdout)["merge"])
-
-    def test_cli_refuses_when_the_gate_ref_is_missing(self):
-        proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--repo", str(self.repo), "--gate-ref", "origin/dead"],
-            input=json.dumps(facts()),
-            capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["reason"], "lease_tamper_not_run")
+
+    def test_cli_has_no_gate_ref_option(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo),
+             "--gate-ref", "origin/main"],
+            input=json.dumps(facts()),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("unrecognized arguments", proc.stderr)
+
+    def test_a_facts_file_may_never_merge(self):
+        proc = self._run(facts(), extra=("--merge",))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "facts_merge_forbidden")
 
     def test_cli_refuses_duplicate_json_keys(self):
         payload = json.dumps(facts())[:-1] + ', "owner_held": false}'
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            [sys.executable, str(SCRIPT), "--facts", "-", "--repo", str(self.repo)],
             input=payload,
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 2, proc.stderr)
@@ -904,11 +952,438 @@ class CommandLineTests(unittest.TestCase):
 
     def test_cli_refuses_a_non_object_facts_document(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            [sys.executable, str(SCRIPT), "--facts", "-", "--repo", str(self.repo)],
             input="[]",
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["reason"], "facts_invalid")
+
+    def test_live_mode_requires_a_pull_request(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo), "--repo-slug", "o/r"],
+            input="",
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "pr_missing")
+
+
+# -- shared policy, fixtures and the phase-2 rules --------------------------
+
+
+class SharedPolicyContractTests(unittest.TestCase):
+    """The lane and the gate must run the same parser, carry and path rules."""
+
+    def test_shared_policy_block_is_byte_identical(self):
+        self.assertEqual(
+            hashlib.sha256(shared_policy_block().encode("utf-8")).hexdigest(),
+            SHARED_POLICY_SHA256,
+            "the shared policy block changed; vendor the identical block into "
+            "workflow .github/scripts/lease_tamper.py and update the hash in both suites",
+        )
+
+    def test_shared_review_line_fixtures(self):
+        fixture = FIXTURES / "review_lines.json"
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(), REVIEW_LINES_SHA256)
+        document = json.loads(fixture.read_text(encoding="utf-8"))
+        for case in document["cases"]:
+            kind, sha = lane.parse_review_line(case["body"])
+            self.assertEqual(kind, case["kind"], case["name"])
+            self.assertEqual(sha, case["sha"], case["name"])
+
+    def test_shared_carry_scenarios(self):
+        fixture = FIXTURES / "carry_scenarios.py"
+        self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(), CARRY_FIXTURES_SHA256)
+        spec = importlib.util.spec_from_file_location("carry_scenarios", fixture)
+        scenarios = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scenarios)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, review_sha, base, head, reason, ok in scenarios.build_all(Path(tmp)):
+                got_ok, got_reason, detail = lane.review_carry_forward(
+                    str(Path(tmp) / name), review_sha, base, head
+                )
+                self.assertEqual((got_ok, got_reason), (ok, reason), "%s: %s" % (name, detail))
+
+    def test_canonical_review_forms_are_accepted(self):
+        for body, kind in (
+            ("APPROVE (independent review) at %s" % HEAD, lane.REVIEW_APPROVE_INDEPENDENT),
+            ("APPROVE (owner) at %s" % HEAD, lane.REVIEW_APPROVE_OWNER),
+            ("CHANGES REQUESTED (why) at %s" % HEAD, lane.REVIEW_CHANGES_REQUESTED),
+            ("APPROVE — independent review (outside reviewer) at %s" % HEAD,
+             lane.REVIEW_APPROVE_INDEPENDENT),
+        ):
+            self.assertEqual(lane.parse_review_line(body)[0], kind, body)
+
+    def test_owner_body_never_satisfies_the_independent_rule(self):
+        review = {"state": "APPROVED", "commit_id": HEAD,
+                  "body": "APPROVE (owner) at %s" % HEAD}
+        self.assertEqual(lane.review_form(review)[0], lane.REVIEW_APPROVE_OWNER)
+        self.assertFalse(lane.review_is_approval(review, lane.REVIEW_APPROVE_INDEPENDENT))
+
+    def test_only_a_completed_success_is_green(self):
+        self.assertTrue(lane.check_run_is_success({"status": "completed", "conclusion": "success"}))
+        for conclusion in ("neutral", "skipped", "failure", "cancelled", "stale", ""):
+            self.assertFalse(
+                lane.check_run_is_success({"status": "completed", "conclusion": conclusion}),
+                conclusion,
+            )
+        self.assertFalse(lane.check_run_is_success({"status": "in_progress", "conclusion": None}))
+
+    def test_sensitive_paths_include_the_explicit_list(self):
+        required = {
+            "bundlebees_plugin/verify_local.py",
+            "bundlebees_plugin/contract.py",
+            "bundlebees_plugin/approval.py",
+            "bundlebees_plugin/tdd.py",
+            "bundlebees_plugin/acdd_cli.py",
+            "bundlebees_plugin/subversion_scan.py",
+            "bundlebees_plugin/test_receipts.py",
+            "bundlebees_plugin/transport.py",
+            "bundlebees_plugin/return_report.py",
+            "tests/test_lease_tamper.py",
+            "tests/test_merge_lane_v5.py",
+        }
+        self.assertLessEqual(required, set(lane.SENSITIVE_PATHS))
+        for path in required:
+            self.assertEqual(lane.sensitive_paths([path]), [path], path)
+        self.assertEqual(lane.sensitive_paths(["bundlebees_plugin/delegate.py"]), [])
+
+
+class RejectionGovernsTests(unittest.TestCase):
+    """A rejection submitted after the approval being used refuses it."""
+
+    def review(self, sha, state="COMMENTED", body=None, submitted_at="2026-11-26T00:00:00Z"):
+        return {
+            "state": state,
+            "commit_id": sha,
+            "body": body if body is not None else "APPROVE (independent review) at %s" % sha,
+            "submitted_at": submitted_at,
+        }
+
+    def test_rejection_at_the_approved_commit_refuses_the_carried_review(self):
+        value = facts(
+            reviews=[self.review(OLDER),
+                     self.review(OLDER, state="CHANGES_REQUESTED", body="no",
+                                 submitted_at="2026-11-26T01:00:00Z")],
+            review_carry=carry(OLDER),
+        )
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "review_changes_requested")
+
+    def test_rejection_at_the_new_head_refuses_the_carried_review(self):
+        value = facts(
+            reviews=[self.review(OLDER),
+                     self.review(HEAD, body="CHANGES REQUESTED (unsound) at %s" % HEAD,
+                                 submitted_at="2026-11-26T01:00:00Z")],
+            review_carry=carry(OLDER),
+        )
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "review_changes_requested")
+
+    def test_rejection_at_the_same_head_refuses_the_exact_review(self):
+        value = facts(
+            reviews=[self.review(HEAD),
+                     self.review(HEAD, state="CHANGES_REQUESTED", body="no",
+                                 submitted_at="2026-11-26T01:00:00Z")],
+        )
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "review_changes_requested")
+
+    def test_a_later_reapproval_supersedes_the_rejection(self):
+        value = facts(
+            reviews=[self.review(HEAD),
+                     self.review(HEAD, state="CHANGES_REQUESTED", body="no",
+                                 submitted_at="2026-11-26T01:00:00Z"),
+                     self.review(HEAD, submitted_at="2026-11-26T02:00:00Z")],
+        )
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["review"], lane.REVIEW_MATCH_EXACT)
+
+
+class ChecksSuccessOnlyTests(unittest.TestCase):
+    def test_a_skipped_or_neutral_required_check_is_not_green(self):
+        for conclusion in ("skipped", "neutral"):
+            value = facts(checks=[{"name": "ci-gate", "status": "completed",
+                                   "conclusion": conclusion, "head": HEAD}])
+            verdict = lane.decide(value)
+            self.assertFalse(verdict["merge"], conclusion)
+            self.assertEqual(verdict["reason"], "checks_not_success", conclusion)
+
+    def test_success_is_green(self):
+        self.assertTrue(lane.decide(facts())["merge"])
+
+
+class SensitivePathPolicyTests(unittest.TestCase):
+    def test_verification_code_needs_the_owner_review(self):
+        for path in (
+            "bundlebees_plugin/verify_local.py",
+            "bundlebees_plugin/contract.py",
+            "bundlebees_plugin/approval.py",
+            "bundlebees_plugin/tdd.py",
+            "bundlebees_plugin/acdd_cli.py",
+            "bundlebees_plugin/subversion_scan.py",
+            "bundlebees_plugin/test_receipts.py",
+            "tests/test_lease_tamper.py",
+        ):
+            value = facts(pr={"files": [path]})
+            verdict = lane.decide(value)
+            self.assertFalse(verdict["merge"], path)
+            self.assertEqual(verdict["reason"], "owner_review_missing", path)
+            self.assertEqual(verdict["sensitive_files"], [path], path)
+
+
+# -- self-fetched REST facts ------------------------------------------------
+
+
+def pull_request(head=HEAD, mergeable=True, draft=False, state="open", labels=None):
+    return {
+        "number": 7,
+        "state": state,
+        "draft": draft,
+        "mergeable": mergeable,
+        "mergeable_state": "clean",
+        "head": {"sha": head, "ref": "feat/x"},
+        "base": {"ref": "main", "sha": BASE},
+        "labels": labels or [],
+    }
+
+
+class FakeGitHub:
+    """A callable ``http`` for collect_facts: routes by REST path."""
+
+    def __init__(self):
+        self.pull = pull_request()
+        self.reviews = []
+        self.files = []
+        self.check_runs = []
+        self.compares = {}
+        self.calls = []
+
+    def __call__(self, url, token):
+        path = urllib.parse.urlparse(url).path
+        self.calls.append(path)
+        if re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/\d+", path):
+            return self.pull, ""
+        if re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/\d+/reviews", path):
+            return self.reviews, ""
+        if re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/\d+/files", path):
+            return self.files, ""
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/commits/([0-9a-f]+)/check-runs", path)
+        if match:
+            return {"check_runs": self.check_runs}, ""
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/compare/([0-9a-f]+)\.\.\.([0-9a-f]+)", path)
+        if match:
+            return self.compares.get(match.group(1), {"status": "ahead", "files": []}), ""
+        raise AssertionError("unexpected REST path: " + path)
+
+
+class FetchFactsTests(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeGitHub()
+        self.api.files = [{"filename": "bundlebees_plugin/example.py"},
+                          {"filename": "tests/test_example.py"}]
+        self.api.reviews = [
+            {"state": "COMMENTED", "commit_id": OLDER, "body": "APPROVE (independent review) at " + OLDER,
+             "submitted_at": "2026-11-26T00:00:00Z", "user": {"login": "reviewer"}},
+        ]
+        self.api.check_runs = [
+            {"name": "ci-gate", "status": "completed", "conclusion": "success",
+             "head_sha": HEAD, "completed_at": "2026-11-26T00:10:00Z"},
+        ]
+        self.api.compares = {OLDER: {"status": "ahead", "files": [{"filename": "CHANGELOG.md"}]}}
+        self.tmp = tempfile.TemporaryDirectory()
+        self.verify_dir = Path(self.tmp.name) / "verify-results"
+        self.verify_dir.mkdir()
+        (self.verify_dir / ("landed-%s.json" % OLDER)).write_text(
+            json.dumps({"sha": OLDER, "ok": True}), encoding="utf-8")
+        self.plan = Path(self.tmp.name) / "plan.json"
+        self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def collect(self, **overrides):
+        gate = overrides.pop("gate", {
+            "ran": True, "ok": True, "reason": "gate_ok", "head": HEAD,
+            "output_tail": "lease-tamper: class=non-slice\n",
+        })
+        return lane.collect_facts(
+            "mojomast/workflow", 7, ".", "test-token",
+            api_url="https://api.test", http=self.api, gate_record=gate,
+            verify_dir=self.verify_dir, plan_path=self.plan,
+            required_checks=("ci-gate",), **overrides)
+
+    def test_collects_the_pull_request_state_reviews_and_checks(self):
+        facts = self.collect()
+        self.assertEqual(facts["pr"]["state"], "OPEN")
+        self.assertFalse(facts["pr"]["is_draft"])
+        self.assertTrue(facts["pr"]["mergeable"])
+        self.assertEqual(facts["pr"]["merge_state_status"], "CLEAN")
+        self.assertEqual(facts["pr"]["head"], HEAD)
+        self.assertEqual(facts["pr"]["base_ref"], "origin/main")
+        self.assertEqual(facts["pr"]["files"],
+                         ["bundlebees_plugin/example.py", "tests/test_example.py"])
+        self.assertEqual(facts["reviews"][0]["commit_id"], OLDER)
+        self.assertEqual(facts["reviews"][0]["submitted_at"], "2026-11-26T00:00:00Z")
+        self.assertEqual(facts["reviews"][0]["author"], "reviewer")
+        self.assertEqual(facts["checks"][0]["name"], "ci-gate")
+        self.assertEqual(facts["checks"][0]["head"], HEAD)
+        self.assertEqual(facts["required_checks"], ["ci-gate"])
+        self.assertIs(facts["owner_held"], False)
+
+    def test_class_comes_from_the_trusted_gate_output(self):
+        self.assertEqual(self.collect()["class"], lane.NON_SLICE)
+        sliced = self.collect(gate={"ran": True, "ok": True, "reason": "gate_ok",
+                                    "output_tail": "lease-tamper: class=slice\n"})
+        self.assertEqual(sliced["class"], lane.SLICE)
+        unknown = self.collect(gate={"ran": True, "ok": True, "reason": "gate_ok",
+                                     "output_tail": "no class line\n"})
+        self.assertIsNone(unknown["class"])
+        self.assertEqual(lane.decide(unknown)["reason"], "class_unknown")
+
+    def test_an_earlier_class_lookalike_cannot_name_the_class(self):
+        gate = {
+            "ran": True, "ok": True, "reason": "gate_ok",
+            "output_tail": "lease-tamper: NOT A SLICE: it changes gate metadata "
+                           "(.rizzstack/leases/lease-tamper: class=slice.json)\n"
+                           "lease-tamper: class=non-slice\n",
+        }
+        self.assertEqual(self.collect(gate=gate)["class"], lane.NON_SLICE)
+
+    def test_verify_records_and_compare_entries_are_measured(self):
+        facts = self.collect()
+        self.assertEqual(facts["verify"]["records"],
+                         [{"record": str(self.verify_dir / ("landed-%s.json" % OLDER)),
+                           "sha": OLDER, "ok": True}])
+        self.assertEqual(facts["verify"]["compare"][OLDER],
+                         {"status": "ahead", "files": ["CHANGELOG.md"]})
+
+    def test_a_compare_without_files_is_inconclusive_not_identical(self):
+        self.api.compares = {OLDER: {"status": "ahead"}}
+        facts = self.collect()
+        self.assertNotIn("files", facts["verify"]["compare"][OLDER])
+        verdict = lane.decide({**facts, "class": lane.SLICE, "review_carry": carry(OLDER)})
+        self.assertEqual(verdict["reason"], "verify_blob_check_inconclusive")
+
+    def test_owner_held_label_is_read_from_the_pull_request(self):
+        self.api.pull = pull_request(labels=[{"name": "owner-held"}])
+        facts = self.collect()
+        self.assertIs(facts["owner_held"], True)
+
+    def test_owner_held_plan_entry_is_read_from_the_plan(self):
+        self.plan.write_text(json.dumps({"owner_held": {"prs": ["mojomast/workflow#7"]}}),
+                             encoding="utf-8")
+        self.assertIs(self.collect()["owner_held"], True)
+        self.plan.write_text(json.dumps({"owner_held": {"prs": ["mojomast/workflow#8"]}}),
+                             encoding="utf-8")
+        self.assertIs(self.collect()["owner_held"], False)
+
+    def test_an_unreadable_plan_is_unknown_not_false(self):
+        self.plan.unlink()
+        self.assertIsNone(self.collect()["owner_held"])
+        self.assertEqual(lane.decide(self.collect())["reason"], "owner_gate_unknown")
+
+    def test_a_plan_without_the_owner_held_key_is_unknown(self):
+        self.plan.write_text(json.dumps({}), encoding="utf-8")
+        self.assertIsNone(self.collect()["owner_held"])
+
+    def test_a_missing_token_fails_closed(self):
+        with self.assertRaises(lane.FetchError):
+            lane.collect_facts("mojomast/workflow", 7, ".", "", api_url="https://api.test",
+                               http=self.api, required_checks=("ci-gate",))
+
+    def test_ruleset_is_read_from_origin_main_not_the_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.invalid"],
+                           check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "test"], check=True)
+            path = repo / "policy" / "rulesets" / "workflow.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"rules": [{"type": "required_status_checks", "parameters": {
+                "required_status_checks": [{"context": "ci-gate"}, {"context": "gitleaks"}]}}]}),
+                encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "policy"], check=True)
+            sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+            subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", sha],
+                           check=True)
+            # A pull request in the lane's checkout could edit the worktree copy;
+            # the lane must still read origin/main's file.
+            path.write_text(json.dumps({"rules": [{"type": "required_status_checks", "parameters": {
+                "required_status_checks": [{"context": "ci-gate"}]}}]}), encoding="utf-8")
+            self.assertEqual(
+                lane.required_checks_from_rulesets("mojomast/workflow", repo=str(repo)),
+                ("ci-gate", "gitleaks"))
+
+    def test_ruleset_required_checks_are_read_from_the_policy_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "policy" / "rulesets").mkdir(parents=True)
+            (root / "policy" / "rulesets" / "workflow.json").write_text(json.dumps({
+                "rules": [{"type": "required_status_checks", "parameters": {
+                    "required_status_checks": [{"context": "ci-gate"}, {"context": "gitleaks"}]}}],
+            }), encoding="utf-8")
+            self.assertEqual(
+                lane.required_checks_from_rulesets("mojomast/workflow", root=root),
+                ("ci-gate", "gitleaks"))
+            self.assertEqual(
+                lane.required_checks_from_rulesets("mojomast/unknown", root=root),
+                ("ci-gate",))
+
+
+class MergeExecutionTests(unittest.TestCase):
+    def test_the_merge_matches_the_measured_head(self):
+        self.assertEqual(
+            lane.merge_command("mojomast/workflow", 7, HEAD),
+            ["gh", "pr", "merge", "7", "--repo", "mojomast/workflow",
+             "--squash", "--match-head-commit", HEAD],
+        )
+
+    def test_merge_runs_under_the_lane_guard(self):
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["env"] = kwargs["env"]
+            return types.SimpleNamespace(returncode=0, stdout="merged", stderr="")
+
+        record = lane.merge_pull_request("mojomast/workflow", 7, HEAD, run=run)
+        self.assertTrue(record["merged"], record)
+        self.assertEqual(seen["argv"], lane.merge_command("mojomast/workflow", 7, HEAD))
+        self.assertEqual(seen["env"][lane.MERGE_LANE_ENV], "1")
+
+    def test_a_failed_merge_is_not_reported_as_merged(self):
+        def run(argv, **kwargs):
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="head moved")
+
+        record = lane.merge_pull_request("mojomast/workflow", 7, HEAD, run=run)
+        self.assertFalse(record["merged"], record)
+        self.assertIn("head moved", record["output"])
+
+    def test_the_merge_is_verified_at_the_exact_head(self):
+        api = FakeGitHub()
+        api.pull = pull_request()
+        api.pull["merged"] = True
+        api.pull["merge_commit_sha"] = "e" * 40
+        record = lane.verify_merge("mojomast/workflow", 7, HEAD, "token",
+                                   api_url="https://api.test", http=api)
+        self.assertTrue(record["verified"], record)
+        self.assertEqual(record["merge_sha"], "e" * 40)
+
+    def test_a_merge_at_another_head_is_not_verified(self):
+        api = FakeGitHub()
+        api.pull = pull_request(head=OLDER)
+        api.pull["merged"] = True
+        record = lane.verify_merge("mojomast/workflow", 7, HEAD, "token",
+                                   api_url="https://api.test", http=api)
+        self.assertFalse(record["verified"], record)
+        self.assertEqual(record["reason"], "merge_unverified")
 
 
 if __name__ == "__main__":
