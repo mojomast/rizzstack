@@ -591,6 +591,10 @@ def main(argv=None):
         print(json.dumps({"merge": False, "reason": "facts_unreadable", "error": type(exc).__name__}))
         return 2
 
+    if not isinstance(facts, dict):
+        print(json.dumps({"merge": False, "reason": "facts_invalid"}))
+        return 1
+
     # The lane never trusts PR CI for the lease/tamper verdict: it runs the
     # trusted base revision's gate itself, against this exact head, and folds
     # the measured record into the facts. A missing record refuses.

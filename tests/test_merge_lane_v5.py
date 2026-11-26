@@ -635,6 +635,14 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["reason"], "facts_unreadable")
 
+    def test_cli_refuses_a_non_object_facts_document(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            input="[]",
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "facts_invalid")
+
 
 if __name__ == "__main__":
     unittest.main()
