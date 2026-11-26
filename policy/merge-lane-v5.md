@@ -52,27 +52,41 @@ The module returns `{"merge": bool, "class": ..., "reason": ..., "verify":
 Rules enforced in code:
 
 - **Review** — GitHub `APPROVED`, or `COMMENTED` whose first non-empty line
-  starts `APPROVE` and names an `independent review`, with `commit_id` equal to
-  the head. A review at an older head is `review_at_older_head`; a
-  `CHANGES_REQUESTED` review at the head always blocks.
-- **Checks** — every newest run per name is `SUCCESS`/`NEUTRAL`/`SKIPPED` at
-  the head. A green run at an older sha does not count. No checks is
+  starts `APPROVE` (not `APPROVED`, not `APPROVE?`) and names an `independent
+  review`, with `commit_id` equal to the head. A review at an older head is
+  `review_at_older_head`; a `CHANGES_REQUESTED` review at the head — formal
+  state or the textual `CHANGES REQUESTED` convention — always blocks.
+- **Checks** — every check carries a name and the exact head it ran against;
+  an unnamed or unattributed entry is not evidence (`checks_invalid`,
+  `checks_unattributed`). Every newest run per name is
+  `SUCCESS`/`NEUTRAL`/`SKIPPED` at the head, selected by its ISO timestamp
+  (list order is only the fallback), so a reversed list cannot resurrect a
+  stale success. A green run at an older sha does not count. No checks is
   `checks_missing` (fail closed), never "green by absence".
 - **Verify (slices only)** — an `ok` record at the exact head, or an ancestor
-  record with no changed file in common with the PR's file list. A `files:
-  null` compare means identical trees; a 300-entry (truncated) compare is
-  `verify_blob_check_inconclusive`.
-- **Owner gate** — `owner_held` blocks both classes before anything else.
+  record with no changed file in common with the PR's file list. A record at
+  the exact head that is not `ok` is `verify_failed_at_head` and is not
+  rescued by an older blob match. A `files: null` compare means identical
+  trees; a 300-entry (truncated) compare is `verify_blob_check_inconclusive`
+  unless another candidate proves equality.
+- **Owner gate** — `owner_held` must be explicitly `false`; true is
+  `owner_gate` and an absent/unknown value is `owner_gate_unknown`. It blocks
+  both classes before anything else.
+- **Shape** — `pr.files` must be a list of paths (`files_invalid` otherwise);
+  `pr.is_draft` and `pr.mergeable` must be explicit (`false` / `true` or
+  `MERGEABLE`); non-object facts are `facts_invalid`.
 
-Reason codes: `owner_gate`, `pr_not_open`, `pr_draft`, `pr_not_mergeable`,
-`merge_state_<state>`, `head_missing`, `class_unknown`, `checks_missing`,
-`checks_pending`, `checks_failed`, `review_missing`, `review_at_older_head`,
-`review_changes_requested`, `verify_evidence_missing`, `verify_at_older_head`,
+Reason codes: `owner_gate`, `owner_gate_unknown`, `facts_invalid`,
+`pr_not_open`, `pr_draft`, `pr_not_mergeable`, `merge_state_<state>`,
+`head_missing`, `files_invalid`, `class_unknown`, `checks_missing`,
+`checks_pending`, `checks_failed`, `checks_invalid`, `checks_unattributed`,
+`review_missing`, `review_at_older_head`, `review_changes_requested`,
+`verify_evidence_missing`, `verify_failed_at_head`, `verify_at_older_head`,
 `verify_blob_check_inconclusive`, `reviewed`.
 
 ## Rollout
 
-1. This PR lands the decision core, the policy and 21 tests for both classes.
+1. This PR lands the decision core, the policy and 32 tests for both classes.
 2. An independent review at the PR head is required before merge (the PR is
    non-slice: no frozen lease names it).
 3. After the merge, the coordinator updates the live

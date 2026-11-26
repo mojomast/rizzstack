@@ -112,6 +112,22 @@ class NonSliceTests(unittest.TestCase):
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "review_missing")
 
+    def test_approve_question_is_not_an_approval(self):
+        value = facts(reviews=[approve(body="APPROVE? NO - not an independent review")])
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_textual_changes_requested_at_head_blocks(self):
+        value = facts(reviews=[
+            approve(),
+            {"state": "COMMENTED", "commit_id": HEAD,
+             "body": "CHANGES REQUESTED (independent review at %s)" % HEAD},
+        ])
+        self.assertEqual(lane.decide(value)["reason"], "review_changes_requested")
+
+    def test_markdown_bold_approve_form_passes(self):
+        value = facts(reviews=[approve(body="**APPROVE** (independent review at %s)" % HEAD)])
+        self.assertTrue(lane.decide(value)["merge"])
+
 
 class SliceTests(unittest.TestCase):
     def test_slice_needs_verify_evidence_at_the_exact_head(self):
@@ -162,13 +178,39 @@ class SliceTests(unittest.TestCase):
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "verify_blob_check_inconclusive")
 
-    def test_slice_verify_record_not_ok_is_ignored(self):
+    def test_slice_verify_record_not_ok_at_head_fails_closed(self):
         value = facts()
         value["class"] = lane.SLICE
         value["verify"] = {"records": [verify(ok=False)], "compare": {}}
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
-        self.assertEqual(verdict["reason"], "verify_evidence_missing")
+        self.assertEqual(verdict["reason"], "verify_failed_at_head")
+
+    def test_slice_failed_verify_at_head_blocks_an_older_blob_match(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(HEAD, ok=False, record="verify-results/att_head.json"),
+                        verify(OLDER)],
+            "compare": {OLDER: {"status": "ahead", "files": ["CHANGELOG.md"]}},
+        }
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_failed_at_head")
+
+    def test_slice_truncated_compare_does_not_shadow_a_later_proof(self):
+        value = facts()
+        value["class"] = lane.SLICE
+        value["verify"] = {
+            "records": [verify(OLDER), verify("c" * 40)],
+            "compare": {
+                OLDER: {"status": "ahead", "files": ["f%d" % n for n in range(300)]},
+                "c" * 40: {"status": "ahead", "files": ["CHANGELOG.md"]},
+            },
+        }
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["verify"], "blob")
 
     def test_slice_still_needs_the_review(self):
         value = facts(reviews=[])
@@ -186,6 +228,12 @@ class GateTests(unittest.TestCase):
             value["class"] = pull_class
             self.assertEqual(lane.decide(value)["reason"], "owner_gate")
 
+    def test_owner_gate_fact_must_be_explicit(self):
+        value = facts()
+        del value["owner_held"]
+        self.assertEqual(lane.decide(value)["reason"], "owner_gate_unknown")
+        self.assertEqual(lane.decide(facts(owner_held=None))["reason"], "owner_gate_unknown")
+
     def test_unknown_class_fails_closed(self):
         value = facts()
         value["class"] = None
@@ -201,6 +249,14 @@ class GateTests(unittest.TestCase):
         self.assertEqual(lane.decide(failed)["reason"], "checks_failed")
         self.assertEqual(lane.decide(missing)["reason"], "checks_missing")
 
+    def test_unattributed_or_unnamed_checks_are_not_evidence(self):
+        unattributed = facts(checks=[
+            {"name": "ci-gate", "status": "completed", "conclusion": "success"}])
+        unnamed = facts(checks=[
+            {"status": "completed", "conclusion": "success", "head": HEAD}])
+        self.assertEqual(lane.decide(unattributed)["reason"], "checks_unattributed")
+        self.assertEqual(lane.decide(unnamed)["reason"], "checks_invalid")
+
     def test_newest_run_per_check_name_wins(self):
         # An old failure is superseded by a newer success on the same name.
         green = facts(checks=[
@@ -215,6 +271,15 @@ class GateTests(unittest.TestCase):
         self.assertTrue(lane.decide(green)["merge"])
         self.assertEqual(lane.decide(pending)["reason"], "checks_pending")
 
+    def test_newest_check_uses_timestamps_not_list_order(self):
+        reversed_failure = facts(checks=[
+            {"name": "ci-gate", "status": "completed", "conclusion": "failure", "head": HEAD,
+             "completed_at": "2026-11-26T00:20:00Z"},
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD,
+             "completed_at": "2026-11-26T00:10:00Z"},
+        ])
+        self.assertEqual(lane.decide(reversed_failure)["reason"], "checks_failed")
+
     def test_a_green_check_at_an_older_head_does_not_count(self):
         value = facts(checks=[
             {"name": "ci-gate", "status": "completed", "conclusion": "success", "head": OLDER}])
@@ -222,11 +287,24 @@ class GateTests(unittest.TestCase):
 
     def test_pr_state_gates(self):
         self.assertEqual(lane.decide(facts(pr={"is_draft": True}))["reason"], "pr_draft")
+        self.assertEqual(lane.decide(facts(pr={"is_draft": None}))["reason"], "pr_draft")
         self.assertEqual(lane.decide(facts(pr={"state": "CLOSED"}))["reason"], "pr_not_open")
         self.assertEqual(lane.decide(facts(pr={"mergeable": False}))["reason"], "pr_not_mergeable")
         self.assertEqual(
+            lane.decide(facts(pr={"mergeable": "CONFLICTING"}))["reason"], "pr_not_mergeable")
+        self.assertEqual(
+            lane.decide(facts(pr={"mergeable": "UNKNOWN"}))["reason"], "pr_not_mergeable")
+        self.assertEqual(lane.decide(facts(pr={"mergeable": "MERGEABLE"}))["merge"], True)
+        self.assertEqual(
             lane.decide(facts(pr={"merge_state_status": "DIRTY"}))["reason"], "merge_state_dirty")
         self.assertTrue(lane.decide(facts(pr={"merge_state_status": "BEHIND"}))["merge"])
+
+    def test_files_must_be_a_list_of_paths(self):
+        self.assertEqual(lane.decide(facts(pr={"files": "a.py"}))["reason"], "files_invalid")
+        self.assertEqual(lane.decide(facts(pr={"files": None}))["reason"], "files_invalid")
+
+    def test_non_dict_facts_are_invalid(self):
+        self.assertEqual(lane.decide([])["reason"], "facts_invalid")
 
 
 class CommandLineTests(unittest.TestCase):
@@ -245,6 +323,13 @@ class CommandLineTests(unittest.TestCase):
         self.assertTrue(json.loads(merged.stdout)["merge"])
         self.assertEqual(refused.returncode, 1, refused.stderr)
         self.assertEqual(json.loads(refused.stdout)["reason"], "review_missing")
+
+    def test_cli_reads_stdin_by_default(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT)], input=json.dumps(facts()),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(json.loads(proc.stdout)["merge"])
 
 
 if __name__ == "__main__":

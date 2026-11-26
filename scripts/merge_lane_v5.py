@@ -47,7 +47,8 @@ RED_CONCLUSIONS = (
     "STARTUP_FAILURE",
     "STALE",
 )
-APPROVE_LINE = re.compile(r"(?i)^\W*approve\b")
+APPROVE_LINE = re.compile(r"(?i)^\W*APPROVE(?![A-Za-z?])")
+CHANGES_LINE = re.compile(r"(?i)^\W*CHANGES\s+REQUESTED\b")
 INDEPENDENT = re.compile(r"(?i)\bindependent\s+review\b")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -68,17 +69,22 @@ def independent_review_at_head(reviews, head):
     """Return the review that qualifies as an independent approval at ``head``.
 
     A qualifying review is either GitHub state ``APPROVED`` or a ``COMMENTED``
-    review whose first non-empty line starts ``APPROVE`` and names an
-    ``independent review``. Both must carry ``commit_id`` equal to ``head``;
-    an approval at an older head is not an approval. A ``CHANGES_REQUESTED``
-    review at the head always blocks, even when another review approves.
+    review whose first non-empty line starts ``APPROVE`` (not ``APPROVED`` and
+    not a question such as ``APPROVE?``) and names an ``independent review``.
+    Both must carry ``commit_id`` equal to ``head``; an approval at an older
+    head is not an approval. A ``CHANGES_REQUESTED`` review at the head -- the
+    formal state or the textual ``CHANGES REQUESTED`` convention -- always
+    blocks, even when another review approves.
     """
     wanted = _sha(head)
     if wanted is None:
         return None
     head_reviews = [r for r in reviews if isinstance(r, dict) and _sha(r.get("commit_id")) == wanted]
-    if any(_text(r.get("state")).upper() == "CHANGES_REQUESTED" for r in head_reviews):
-        return None
+    for review in head_reviews:
+        state = _text(review.get("state")).upper()
+        first = next((line.strip() for line in _text(review.get("body")).splitlines() if line.strip()), "")
+        if state == "CHANGES_REQUESTED" or CHANGES_LINE.search(first):
+            return None
     for review in head_reviews:
         state = _text(review.get("state")).upper()
         if state == "APPROVED":
@@ -96,9 +102,12 @@ def review_refusal(reviews, head):
     wanted = _sha(head)
     if wanted is None:
         return "review_missing"
-    if any(isinstance(r, dict) and _text(r.get("state")).upper() == "CHANGES_REQUESTED"
-           and _sha(r.get("commit_id")) == wanted for r in reviews):
-        return "review_changes_requested"
+    for review in reviews:
+        if not isinstance(review, dict) or _sha(review.get("commit_id")) != wanted:
+            continue
+        first = next((line.strip() for line in _text(review.get("body")).splitlines() if line.strip()), "")
+        if _text(review.get("state")).upper() == "CHANGES_REQUESTED" or CHANGES_LINE.search(first):
+            return "review_changes_requested"
     for review in reviews:
         if not isinstance(review, dict):
             continue
@@ -114,26 +123,61 @@ def review_refusal(reviews, head):
     return "review_missing"
 
 
+def _check_stamp(check):
+    for key in ("completed_at", "completedAt", "started_at", "startedAt"):
+        value = check.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _newer(candidate, incumbent):
+    """True when ``candidate`` is the newer run of the same check name.
+
+    ISO-8601 timestamps compare lexicographically. When neither entry carries
+    one, the later list entry wins (the lane appends oldest to newest). A
+    timestamped entry always beats an undated one, so a reversed list cannot
+    resurrect a stale failure or hide a newer one.
+    """
+    if incumbent is None:
+        return True
+    left, right = _check_stamp(candidate), _check_stamp(incumbent)
+    if left is not None and right is not None:
+        return left >= right
+    if left is not None:
+        return True
+    if right is not None:
+        return False
+    return True
+
+
 def checks_state(checks, head):
     """``(ok, reason)`` for the newest run per check name at ``head``.
 
-    Facts are ordered oldest to newest; a later entry with the same name
-    supersedes an earlier one. Checks attributed to another head are ignored
-    (a green run at an older sha does not count). No checks at all fails
-    closed.
+    Every check must name a check and carry the exact head it ran against;
+    an unnamed or unattributed entry is not evidence. The newest run per name
+    is selected by its ISO timestamp, falling back to list order. No checks at
+    all fails closed.
     """
     wanted = _sha(head)
     if wanted is None:
         return False, "checks_missing"
+    if not isinstance(checks, (list, tuple)):
+        return False, "checks_invalid"
     newest = {}
     for check in checks:
         if not isinstance(check, dict):
-            continue
+            return False, "checks_invalid"
+        name = _text(check.get("name")).strip()
+        if not name:
+            return False, "checks_invalid"
         check_head = _sha(check.get("head"))
-        if check_head is not None and check_head != wanted:
+        if check_head is None:
+            return False, "checks_unattributed"
+        if check_head != wanted:
             continue
-        name = _text(check.get("name")) or "unnamed"
-        newest[name] = check
+        if _newer(check, newest.get(name)):
+            newest[name] = check
     if not newest:
         return False, "checks_missing"
     failed = False
@@ -155,26 +199,36 @@ def checks_state(checks, head):
 def verify_at_head(records, compare, head, files):
     """``(ok, reason, match)`` for verify evidence at ``head``.
 
-    Exact equality is preferred. Otherwise an ``ok`` record at an ancestor sha
-    passes only with blob equality on every file the PR changes: the compare's
-    changed-file list must not intersect the PR file list. ``files: null``
-    means the trees are identical; a 300-entry (truncated) compare is
-    inconclusive and fails closed.
+    Exact equality is preferred. A record at the exact head that is not ``ok``
+    fails closed: a head the verifier rejected is not rescued by an older
+    record. Otherwise an ``ok`` record at an ancestor sha passes only with
+    blob equality on every file the PR changes: the compare's changed-file
+    list must not intersect the PR file list. ``files: null`` means the trees
+    are identical; a 300-entry (truncated) compare is inconclusive, and a
+    later candidate that proves equality still wins over it.
     """
     wanted = _sha(head)
-    records = [r for r in records if isinstance(r, dict) and r.get("ok") is True]
+    if not isinstance(records, (list, tuple)):
+        return False, "verify_evidence_missing", None
+    records = [r for r in records if isinstance(r, dict)]
     if wanted is not None:
-        for record in records:
-            if _sha(record.get("sha")) == wanted:
-                return True, "verify_exact", "exact"
-    pr_files = {f for f in files if isinstance(f, str) and f}
+        head_records = [r for r in records if _sha(r.get("sha")) == wanted]
+        if any(r.get("ok") is not True for r in head_records):
+            return False, "verify_failed_at_head", None
+        if any(r.get("ok") is True for r in head_records):
+            return True, "verify_exact", "exact"
+    ok_records = [r for r in records if r.get("ok") is True]
+    if not isinstance(compare, dict):
+        compare = {}
+    pr_files = {f for f in files if isinstance(f, str) and f} if isinstance(files, (list, tuple)) else set()
     saw_older = False
-    for record in records:
+    inconclusive = False
+    for record in ok_records:
         sha = _sha(record.get("sha"))
         if sha is None or sha == wanted:
             continue
         saw_older = True
-        entry = compare.get(sha) if isinstance(compare, dict) else None
+        entry = compare.get(sha)
         if not isinstance(entry, dict):
             continue
         if _text(entry.get("status")).lower() not in ("ahead", "identical"):
@@ -183,12 +237,16 @@ def verify_at_head(records, compare, head, files):
         if changed is None:
             return True, "verify_blob_equal", "blob"
         if not isinstance(changed, list):
+            inconclusive = True
             continue
         if len(changed) >= 300:
-            return False, "verify_blob_check_inconclusive", None
+            inconclusive = True
+            continue
         if pr_files.intersection(f for f in changed if isinstance(f, str)):
             continue
         return True, "verify_blob_equal", "blob"
+    if inconclusive:
+        return False, "verify_blob_check_inconclusive", None
     if saw_older:
         return False, "verify_at_older_head", None
     return False, "verify_evidence_missing", None
@@ -196,8 +254,11 @@ def verify_at_head(records, compare, head, files):
 
 def decide(facts):
     """Apply the owner-approved merge policy to one PR's measured facts."""
-    facts = facts if isinstance(facts, dict) else {}
-    pr = facts.get("pr") if isinstance(facts.get("pr"), dict) else {}
+    if not isinstance(facts, dict):
+        return {"merge": False, "class": None, "reason": "facts_invalid", "verify": None, "head": None}
+    pr = facts.get("pr")
+    if not isinstance(pr, dict):
+        pr = {}
     head = _sha(pr.get("head"))
     verdict = {
         "merge": False,
@@ -211,19 +272,23 @@ def decide(facts):
         verdict["reason"] = reason
         return verdict
 
-    if facts.get("owner_held"):
-        return refuse("owner_gate")
+    if facts.get("owner_held") is not False:
+        return refuse("owner_gate" if facts.get("owner_held") else "owner_gate_unknown")
     if _text(pr.get("state")).upper() != "OPEN":
         return refuse("pr_not_open")
-    if pr.get("is_draft") is True:
+    if pr.get("is_draft") is not False:
         return refuse("pr_draft")
-    if pr.get("mergeable") is False:
+    mergeable = pr.get("mergeable")
+    if mergeable is not True and _text(mergeable).upper() != "MERGEABLE":
         return refuse("pr_not_mergeable")
     merge_state = _text(pr.get("merge_state_status")).upper()
     if merge_state not in MERGE_STATES:
         return refuse("merge_state_" + (merge_state.lower() or "unknown"))
     if head is None:
         return refuse("head_missing")
+    files = pr.get("files")
+    if not isinstance(files, (list, tuple)) or any(not isinstance(f, str) or not f for f in files):
+        return refuse("files_invalid")
 
     pull_class = facts.get("class")
     if pull_class not in (SLICE, NON_SLICE):
@@ -244,7 +309,7 @@ def decide(facts):
             verify_facts.get("records") or [],
             verify_facts.get("compare") or {},
             head,
-            pr.get("files") or [],
+            files,
         )
         if not ok:
             return refuse(reason)
@@ -257,11 +322,14 @@ def decide(facts):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Apply the merge-lane v5 slice/non-slice policy.")
-    parser.add_argument("--facts", required=True)
+    parser.add_argument("--facts", default="-", help="facts JSON file, or '-' for stdin")
     args = parser.parse_args(argv)
     try:
-        with open(args.facts, encoding="utf-8") as handle:
-            facts = json.load(handle)
+        if args.facts == "-":
+            facts = json.load(sys.stdin)
+        else:
+            with open(args.facts, encoding="utf-8") as handle:
+                facts = json.load(handle)
     except (OSError, ValueError) as exc:
         print(json.dumps({"merge": False, "reason": "facts_unreadable", "error": type(exc).__name__}))
         return 2
