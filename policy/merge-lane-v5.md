@@ -176,6 +176,11 @@ If any condition fails the earlier review does not count and the refusal names
 the condition. The same rule covers the owner attestation required on a
 gate/lane change.
 
+The reason it exists: the workflow ruleset sets
+`strict_required_status_checks_policy`, so every merge to `main` forces open
+branches to update before they can merge. That update moves the head and, with
+an exact-head-only rule, demanded a fresh review of unchanged code every time.
+
 ## Rollout
 
 1. This PR lands the decision core, the policy and the tests for both classes,
