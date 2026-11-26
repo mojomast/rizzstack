@@ -35,6 +35,31 @@ def approve(head=HEAD, state="COMMENTED", body=None):
     }
 
 
+def owner_approve(head=HEAD, state="COMMENTED", body=None):
+    return {
+        "state": state,
+        "commit_id": head,
+        "author": "owner",
+        "body": body
+        if body is not None
+        else "APPROVE (owner) at %s\n\nOne-time owner decision." % head,
+    }
+
+
+def gate_record(ok=True, ran=True, reason=None):
+    return {
+        "ran": ran,
+        "ok": ok,
+        "reason": reason or ("gate_ok" if ok else "gate_failed"),
+        "script_ref": "origin/main",
+        "script_sha": "c" * 40,
+        "base": "d" * 40,
+        "head": HEAD,
+        "exit_code": 0 if ok else 1,
+        "output_tail": "",
+    }
+
+
 def facts(**overrides):
     value = {
         "pr": {
@@ -53,6 +78,7 @@ def facts(**overrides):
         ],
         "required_checks": ["ci-gate"],
         "verify": {"records": [], "compare": {}},
+        "lease_tamper": gate_record(),
         "owner_held": False,
     }
     for key, override in overrides.items():
@@ -387,13 +413,186 @@ class GateTests(unittest.TestCase):
         self.assertEqual(lane.decide([])["reason"], "facts_invalid")
 
 
+class LeaseTamperGateTests(unittest.TestCase):
+    def test_missing_gate_record_refuses(self):
+        value = facts()
+        del value["lease_tamper"]
+        self.assertEqual(lane.decide(value)["reason"], "lease_tamper_not_run")
+
+    def test_gate_not_run_refuses(self):
+        value = facts(lease_tamper=gate_record(ran=False))
+        self.assertEqual(lane.decide(value)["reason"], "lease_tamper_not_run")
+
+    def test_failed_gate_refuses_even_when_every_other_fact_is_green(self):
+        value = facts(lease_tamper=gate_record(ok=False))
+        self.assertEqual(lane.decide(value)["reason"], "lease_tamper_failed")
+
+    def test_green_gate_merges(self):
+        self.assertTrue(lane.decide(facts())["merge"])
+
+    def test_refusal_names_the_gate_reason(self):
+        verdict = lane.decide(facts(lease_tamper=gate_record(ok=False)))
+        self.assertEqual(verdict["reason"], "lease_tamper_failed")
+        self.assertEqual(verdict["lease_tamper"], "gate_failed")
+
+
+class SensitivePathOwnerReviewTests(unittest.TestCase):
+    def test_github_workflow_needs_an_owner_review(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_rizzstack_lease_needs_an_owner_review(self):
+        value = facts(pr={"files": [".rizzstack/leases/wave-c-c2.json"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_lane_code_needs_an_owner_review(self):
+        value = facts(pr={"files": ["scripts/merge_lane_v5.py"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_gate_code_needs_an_owner_review(self):
+        value = facts(pr={"files": ["scripts/check_ci_gate.py"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_policy_needs_an_owner_review(self):
+        value = facts(pr={"files": ["policy/merge-lane-v5.md"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_owner_review_at_head_satisfies_the_extra_gate(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]},
+                      reviews=[approve(), owner_approve()])
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["sensitive_files"], [".github/workflows/ci.yml"])
+
+    def test_owner_review_at_an_older_head_does_not(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]},
+                      reviews=[approve(), owner_approve(OLDER)])
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_at_older_head")
+
+    def test_independent_review_does_not_satisfy_the_owner_gate(self):
+        value = facts(pr={"files": [".github/scripts/lease_tamper.py"]})
+        self.assertEqual(lane.decide(value)["reason"], "owner_review_missing")
+
+    def test_owner_review_does_not_replace_the_independent_review(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]}, reviews=[owner_approve()])
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_docs_only_change_needs_no_owner_review(self):
+        value = facts(pr={"files": ["docs/readme.md", "README.md"]})
+        self.assertTrue(lane.decide(value)["merge"])
+
+    def test_delegate_named_file_is_not_gate_code(self):
+        value = facts(pr={"files": ["bundlebees_plugin/delegate.py"]})
+        self.assertTrue(lane.decide(value)["merge"])
+
+    def test_owner_changes_requested_at_head_blocks(self):
+        value = facts(pr={"files": [".github/workflows/ci.yml"]}, reviews=[
+            approve(), owner_approve(),
+            {"state": "COMMENTED", "commit_id": HEAD, "body": "CHANGES REQUESTED (owner)"},
+        ])
+        self.assertEqual(lane.decide(value)["reason"], "review_changes_requested")
+
+    def test_sensitive_paths_are_reported_for_both_classes(self):
+        for pull_class in (lane.SLICE, lane.NON_SLICE):
+            value = facts(pr={"files": [".rizzstack/contracts/c.json"]},
+                          reviews=[approve(), owner_approve()])
+            value["class"] = pull_class
+            if pull_class == lane.SLICE:
+                value["verify"] = {"records": [verify()], "compare": {}}
+            verdict = lane.decide(value)
+            self.assertTrue(verdict["merge"], verdict)
+            self.assertEqual(verdict["sensitive_files"], [".rizzstack/contracts/c.json"])
+
+
+class LeaseTamperRunnerTests(unittest.TestCase):
+    """The runner must execute the trusted base copy, never the PR's copy."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "test")
+        self.script = self.repo / ".github" / "scripts" / "lease_tamper.py"
+        self.script.parent.mkdir(parents=True)
+        self.script.write_text("import sys\nprint('trusted gate ok')\nsys.exit(0)\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "trusted gate")
+        self.main_sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self._git("update-ref", "refs/remotes/origin/main", self.main_sha)
+        self.script.write_text("import sys\nprint('head gate must not run')\nsys.exit(1)\n",
+                               encoding="utf-8")
+        self._git("commit", "-qam", "head edits the gate")
+        self.head_sha = self._git("rev-parse", "HEAD").stdout.strip()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            capture_output=True, text=True, timeout=30, check=True)
+
+    def test_runs_the_trusted_main_copy_not_the_head_copy(self):
+        record = lane.run_lease_tamper(
+            str(self.repo), self.head_sha, base=self.main_sha,
+            number=7, branch="feat/x", fetch=False)
+        self.assertTrue(record["ran"], record)
+        self.assertTrue(record["ok"], record)
+        self.assertEqual(record["script_sha"], self.main_sha)
+        self.assertIn("trusted gate ok", record["output_tail"])
+        self.assertNotIn("head gate must not run", record["output_tail"])
+
+    def test_a_failing_trusted_gate_refuses(self):
+        self.script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+        self._git("commit", "-qam", "trusted gate now fails")
+        failing_sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self._git("update-ref", "refs/remotes/origin/main", failing_sha)
+        record = lane.run_lease_tamper(
+            str(self.repo), self.head_sha, base=self.main_sha, fetch=False)
+        self.assertTrue(record["ran"], record)
+        self.assertFalse(record["ok"], record)
+        self.assertEqual(record["reason"], "gate_failed")
+        self.assertEqual(record["script_sha"], failing_sha)
+
+    def test_missing_gate_ref_is_not_green_by_absence(self):
+        record = lane.run_lease_tamper(
+            str(self.repo), self.head_sha, base=self.main_sha,
+            script_ref="origin/dead", fetch=False)
+        self.assertFalse(record["ran"], record)
+        self.assertFalse(record["ok"], record)
+        self.assertEqual(record["reason"], "gate_ref_unresolved")
+
+
 class CommandLineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls._tmp.name)
+        script = cls.repo / ".github" / "scripts" / "lease_tamper.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cls.repo), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(cls.repo), "config", "user.email", "t@example.invalid"],
+                       check=True)
+        subprocess.run(["git", "-C", str(cls.repo), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(cls.repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(cls.repo), "commit", "-qm", "gate"], check=True)
+        sha = subprocess.run(["git", "-C", str(cls.repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        subprocess.run(["git", "-C", str(cls.repo), "update-ref", "refs/remotes/origin/main", sha],
+                       check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
     def _run(self, payload):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "facts.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             return subprocess.run(
-                [sys.executable, str(SCRIPT), "--facts", str(path)],
+                [sys.executable, str(SCRIPT), "--facts", str(path), "--repo", str(self.repo)],
                 capture_output=True, text=True, timeout=60)
 
     def test_cli_exit_zero_on_merge_and_one_on_refusal(self):
@@ -406,15 +605,32 @@ class CommandLineTests(unittest.TestCase):
 
     def test_cli_reads_stdin_by_default(self):
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT)], input=json.dumps(facts()),
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            input=json.dumps(facts()),
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(json.loads(proc.stdout)["merge"])
 
+    def test_cli_runs_the_gate_even_when_the_facts_omit_it(self):
+        payload = facts()
+        del payload["lease_tamper"]
+        proc = self._run(payload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(json.loads(proc.stdout)["merge"])
+
+    def test_cli_refuses_when_the_gate_ref_is_missing(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo), "--gate-ref", "origin/dead"],
+            input=json.dumps(facts()),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["reason"], "lease_tamper_not_run")
+
     def test_cli_refuses_duplicate_json_keys(self):
         payload = json.dumps(facts())[:-1] + ', "owner_held": false}'
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT)], input=payload,
+            [sys.executable, str(SCRIPT), "--repo", str(self.repo)],
+            input=payload,
             capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["reason"], "facts_unreadable")

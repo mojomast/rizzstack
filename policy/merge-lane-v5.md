@@ -36,7 +36,9 @@ Input (`--facts facts.json`):
 ```json
 {
   "pr": {"state": "OPEN", "is_draft": false, "mergeable": true,
-         "merge_state_status": "CLEAN", "head": "<40-hex>", "files": ["..."]},
+         "merge_state_status": "CLEAN", "head": "<40-hex>",
+         "number": 83, "branch": "feat/example", "base_ref": "origin/main",
+         "files": ["..."]},
   "class": "slice" | "non-slice" | null,
   "reviews": [{"state": "...", "commit_id": "<40-hex>", "body": "...", "author": "..."}],
   "checks": [{"name": "...", "status": "completed", "conclusion": "success",
@@ -44,9 +46,19 @@ Input (`--facts facts.json`):
   "required_checks": ["ci-gate"],
   "verify": {"records": [{"record": "...", "sha": "<40-hex>", "ok": true}],
              "compare": {"<sha>": {"status": "ahead", "files": ["..."] | null}}},
+  "lease_tamper": {"ran": true, "ok": true, "reason": "gate_ok",
+                   "script_ref": "origin/main", "script_sha": "<40-hex>",
+                   "base": "<40-hex>", "head": "<40-hex>", "exit_code": 0},
   "owner_held": false
 }
 ```
+
+The `lease_tamper` record is **measured by the lane**, not supplied by the
+caller: `main()` extracts `.github/scripts/lease_tamper.py` from the base
+revision (`origin/main`), runs it against the exact head, and folds the record
+into the facts. `decide()` refuses a missing, unrun or failed record. A facts
+file that carries its own record is overwritten, so a caller cannot vouch for
+the gate.
 
 The module returns `{"merge": bool, "class": ..., "reason": ..., "verify":
 "exact"|"blob"|null, "head": ...}`. Exit status is 0 only when `merge` is true.
@@ -78,6 +90,25 @@ Rules enforced in code:
   key: explicit `null` means identical trees; a missing key, a non-string
   member, or a 300-entry (truncated) list is `verify_blob_check_inconclusive`
   unless another candidate proves equality.
+- **Lease/tamper gate self-run** — the lane never treats the PR's own
+  `lease-tamper` CI job as proof: a PR can edit the workflow or the gate
+  script. Before any merge it extracts `.github/scripts/lease_tamper.py` from
+  `origin/main` (fetching first when an `origin` remote exists), runs that
+  trusted copy against the exact head with `--repo/--base/--head/--pull-request/--branch`,
+  and refuses unless it exits 0. Missing/unreadable/unresolved script or base
+  is `lease_tamper_not_run`; a non-zero gate is `lease_tamper_failed`. The
+  record names the exact `script_sha` and `base` it used. PR CI remains a
+  signal only.
+- **Owner review for gate/lane changes** — a PR that touches `.github/**`,
+  `.rizzstack/**`, `gate/**`, `gates/**`, `policy/**`, or a file whose name
+  contains the word `gate` or `lane` (`scripts/merge_lane_v5.py`,
+  `scripts/check_ci_gate.py`) additionally needs an explicit **owner** review
+  at the exact head: first non-empty line `APPROVE (owner …)` or
+  `OWNER APPROVED`, `commit_id` equal to the head. The independent review and
+  the owner review do not substitute for each other; a `CHANGES_REQUESTED`
+  review at the head blocks. Refusals: `owner_review_missing`,
+  `owner_review_at_older_head`. Word tokens are used, so `delegate.py` is not
+  gate code.
 - **Owner gate** — `owner_held` must be explicitly `false`; true is
   `owner_gate` and an absent/unknown value is `owner_gate_unknown`. It blocks
   both classes before anything else.
@@ -92,15 +123,20 @@ Reason codes: `owner_gate`, `owner_gate_unknown`, `facts_invalid`,
 `checks_pending`, `checks_failed`, `checks_invalid`, `checks_unattributed`,
 `checks_ambiguous`, `required_checks_missing`, `reviews_invalid`,
 `review_missing`, `review_at_older_head`, `review_changes_requested`,
-`verify_evidence_missing`, `verify_failed_at_head`, `verify_at_older_head`,
+`lease_tamper_not_run`, `lease_tamper_failed`, `owner_review_missing`,
+`owner_review_at_older_head`, `verify_evidence_missing`,
+`verify_failed_at_head`, `verify_at_older_head`,
 `verify_blob_check_inconclusive`, `reviewed`.
 
 ## Rollout
 
-1. This PR lands the decision core, the policy and 43 tests for both classes.
+1. This PR lands the decision core, the policy and the tests for both classes,
+   the self-run lease/tamper gate and the sensitive-path owner review.
 2. An independent review at the PR head is required before merge (the PR is
    non-slice: no frozen lease names it).
 3. After the merge, the coordinator updates the live
-   `rizzstack-auto-merge-v5` cron prompt to gate 4 = "slice only" and to read
-   the class from the lease/tamper gate. Until that edit, the live lane is
-   unchanged.
+   `rizzstack-auto-merge-v5` cron prompt to gate 4 = "slice only", to read the
+   class from the lease/tamper gate, and to invoke this module with
+   `--repo <clean checkout> --repo-slug <owner/repo>` so the gate runs on
+   `origin/main`'s script. Until that edit, the live lane is unchanged and this
+   code is not deployed.
