@@ -1,15 +1,16 @@
-"""Signed pre-authorization envelopes (S2, preauth-envelope).
+"""Signed pre-authorization envelopes (S2 r2, preauth-envelope).
 
 The owner signs one bounded batch with ``ssh-keygen -Y sign -n rizzstack-preauth``; the key
-never leaves the owner's machine and the repository holds only ``policy/allowed_signers``
-(public keys). ``scripts/preauth.py`` verifies an envelope and decides one use of it from
-measured facts only, and every doubt is a named refusal:
+never leaves the owner's machine.  The trust root ``policy/allowed_signers`` is read-only and
+its bytes are pinned here, and the checker also requires every signer key's fingerprint to be
+in a trusted set the caller reads from the frozen owner pin, so an implementer-added key is
+refused.  ``scripts/preauth.py`` verifies an envelope and decides one use of it from measured
+facts only; every doubt is a named refusal, including missing state (fail closed).
 
-expired, not yet valid, longer than seven days, revoked, bad or foreign signature, wrong
-namespace, unknown issuer, wrong repository, a base that does not descend from the signed
-base, a contract the envelope does not list, a re-freeze that changes frozen tests, conftest,
-pytest configuration, fixtures or import hooks, exhausted budget or uses, a replayed use and
-a reused nonce.
+Every ``check()`` call in this file runs with process creation recorded: the only program the
+checker may start is ``ssh-keygen -Y verify`` with a bounded timeout, never ``-Y sign``.
+
+Wiring the checker into the gate/lane is the separate named slice ``preauth-wiring``.
 
 Every key in these tests is generated in a temporary directory at run time.
 
@@ -18,25 +19,40 @@ Run: python3 -m pytest -q -p no:cacheprovider tests/test_preauth_envelope.py
 
 from __future__ import annotations
 
+import ast
+import base64
+import hashlib
 import importlib.util
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "scripts" / "preauth.py"
 SIGNERS = ROOT / "policy" / "allowed_signers"
 SCHEMA = ROOT / "schemas" / "preauth.schema.json"
 
+#: The frozen trust root.  Changing policy/allowed_signers needs a new owner-approved contract.
+ALLOWED_SIGNERS_SHA256 = "be7d243277ad0073c9d03dc09355f1b769824cde7c2ed0b662c0c190d19973ee"
+#: The owner fingerprints the trust root may name.  Empty until the owner adds a key.
+OWNER_FINGERPRINTS: frozenset = frozenset()
+
+ALLOWED_ACTIONS = {"merge_slice", "refreeze_contract", "vendor_sync", "close_superseded_pr", "dispatch_wave"}
 REPO = "mojomast/bundlebees"
+OTHER_REPO = "mojomast/hyvv"
 SIGNED_BASE = "a" * 40
 CURRENT_BASE = "b" * 40
 CONTRACT = "7ef0c9d0826186d5fe5e7188b3e8c56268feb5ed73928963fd442a4f49f56d08"
 SOURCE_REV = "758e0b6e" + "0" * 32
+NONCE = "4f1c2a9e8b7d6c5b4a39281706f5e4d3"
+ENVELOPE_ID = "pa-20261128-01"
 NOW = datetime(2026, 11, 28, 15, 0, tzinfo=timezone.utc)
 
 
@@ -54,11 +70,11 @@ def stamp(moment):
 def envelope(**overrides):
     value = {
         "schema": "rizzstack.preauth/2",
-        "id": "pa-20261128-01",
+        "id": ENVELOPE_ID,
         "issuer": "kyle",
         "issued_at": stamp(NOW - timedelta(hours=1)),
         "expires_at": stamp(NOW + timedelta(days=2)),
-        "nonce": "4f1c2a9e8b7d6c5b4a39281706f5e4d3",
+        "nonce": NONCE,
         "action_class": "merge_slice",
         "repos": [REPO],
         "bases": {REPO: SIGNED_BASE},
@@ -74,17 +90,30 @@ def envelope(**overrides):
     return value
 
 
+def fingerprint(public_line):
+    blob = base64.b64decode(public_line.split()[1])
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+
+
 class Keys:
     """A throwaway owner key and an allowed_signers file, both in a temp dir."""
 
-    def __init__(self, principal="kyle", namespaces="rizzstack-preauth"):
+    def __init__(self, principal="kyle", namespaces="rizzstack-preauth", options=None):
         self.dir = Path(tempfile.mkdtemp(prefix="preauth-keys-"))
         self.key = self.dir / "owner"
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "test-owner",
                         "-f", str(self.key)], check=True, capture_output=True)
-        public = (self.dir / "owner.pub").read_text().split()
-        self.signers = self.dir / "allowed_signers"
-        self.signers.write_text('%s namespaces="%s" %s %s\n' % (principal, namespaces, public[0], public[1]))
+        self.public = (self.dir / "owner.pub").read_text().strip()
+        self.fingerprint = fingerprint(self.public)
+        parts = self.public.split()
+        opts = options if options is not None else 'namespaces="%s"' % namespaces
+        self.line = "%s %s %s %s" % (principal, opts, parts[0], parts[1])
+        self.signers = self.write_signers([self.line])
+
+    def write_signers(self, lines, name="allowed_signers"):
+        path = self.dir / name
+        path.write_text("".join(line + "\n" for line in lines))
+        return path
 
     def sign(self, data: bytes, namespace="rizzstack-preauth") -> bytes:
         message = self.dir / "envelope.json"
@@ -101,9 +130,87 @@ class Keys:
 
 
 def facts(**overrides):
-    value = {"revoked": [], "consumed": [], "nonces": {}, "oracle": None}
+    value = {"revoked": [], "consumed": [], "nonces": {}, "attempts": {}, "bees_in_flight": 0,
+             "oracle": None}
     value.update(overrides)
     return value
+
+
+def used(n, envelope_id=ENVELOPE_ID, contract="f" * 64):
+    return [{"envelope_id": envelope_id, "nonce": NONCE, "contract_sha256": contract}] * n
+
+
+class ProcessRecorder:
+    """Record every process the checker starts; refuse anything but ssh-keygen -Y verify."""
+
+    def __init__(self, case, fail=None):
+        self.case, self.fail, self.calls, self.timeouts = case, fail, [], []
+        self._real_popen = subprocess.Popen
+
+    def popen(self, args, *a, **k):
+        argv = [str(x) for x in (args if isinstance(args, (list, tuple)) else [args])]
+        self.calls.append(argv)
+        if self.fail == "missing":
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        if self.fail == "timeout":
+            return _HangingProcess(argv, self)
+        return self._real_popen(args, *a, **k)
+
+    def forbid(self, name):
+        def refuse(*a, **k):
+            self.calls.append([name] + [str(x) for x in a])
+            raise AssertionError("checker started a process via %s" % name)
+        return refuse
+
+    def __enter__(self):
+        self.patches = [mock.patch("subprocess.Popen", self.popen)]
+        for name in ("system", "popen", "posix_spawn", "posix_spawnp", "execv", "execve", "execvp",
+                     "spawnv", "spawnve", "fork", "forkpty"):
+            if hasattr(os, name):
+                self.patches.append(mock.patch("os." + name, self.forbid("os." + name)))
+        for p in self.patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in reversed(self.patches):
+            p.stop()
+        for argv in self.calls:
+            self.case.assertTrue(argv and os.path.basename(argv[0]) == "ssh-keygen", argv)
+            self.case.assertEqual(argv[1:3], ["-Y", "verify"], argv)
+            self.case.assertNotIn("sign", argv[1:3], argv)
+        return False
+
+
+class _HangingProcess:
+    def __init__(self, argv, recorder):
+        self.args, self.recorder, self.returncode, self.pid = argv, recorder, None, 0
+        self.stdin = self.stdout = self.stderr = None
+
+    def communicate(self, input=None, timeout=None):
+        self.recorder.timeouts.append(timeout)
+        raise subprocess.TimeoutExpired(self.args, timeout or 0)
+
+    def wait(self, timeout=None):
+        self.recorder.timeouts.append(timeout)
+        if self.returncode is None and timeout is not None:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+    terminate = kill
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.kill()
+        return False
 
 
 class EnvelopeCase(unittest.TestCase):
@@ -117,15 +224,17 @@ class EnvelopeCase(unittest.TestCase):
         cls.keys.close()
 
     def decide(self, value=None, *, signature=None, data=None, contract=CONTRACT, repo=REPO,
-               base=CURRENT_BASE, now=NOW, measured=None, signers=None,
-               is_ancestor=lambda older, newer: older == SIGNED_BASE and newer == CURRENT_BASE):
+               base=CURRENT_BASE, tier="T3", now=NOW, measured=None, signers=None, trusted=None,
+               fail=None, is_ancestor=lambda older, newer: older == SIGNED_BASE and newer == CURRENT_BASE):
         data = data if data is not None else json.dumps(value if value is not None else envelope(),
                                                         sort_keys=True).encode("utf-8")
         signature = signature if signature is not None else self.keys.sign(data)
-        return self.pre.check(
-            data, signature, allowed_signers=str(signers or self.keys.signers), repo=repo,
-            base_rev=base, contract_sha256=contract, now=now,
-            facts=measured if measured is not None else facts(), is_ancestor=is_ancestor)
+        with ProcessRecorder(self, fail) as self.recorder:
+            return self.pre.check(
+                data, signature, allowed_signers=str(signers or self.keys.signers),
+                trusted_fingerprints=frozenset(trusted if trusted is not None else {self.keys.fingerprint}),
+                repo=repo, base_rev=base, contract_sha256=contract, tier=tier, now=now,
+                facts=measured if measured is not None else facts(), is_ancestor=is_ancestor)
 
     def refused(self, reason, *args, **kwargs):
         with self.assertRaises(self.pre.PreauthRefused) as caught:
@@ -137,14 +246,15 @@ class SignatureTest(EnvelopeCase):
     def test_valid_signed_envelope_authorizes_one_listed_contract(self):
         decision = self.decide()
         self.assertTrue(decision["ok"])
-        self.assertEqual(decision["envelope_id"], "pa-20261128-01")
+        self.assertEqual(decision["envelope_id"], ENVELOPE_ID)
         self.assertEqual(decision["contract_sha256"], CONTRACT)
         self.assertEqual(decision["max_tier"], "T3")
+        self.assertEqual(len(self.recorder.calls), 1, self.recorder.calls)
 
     def test_tampered_envelope_is_a_bad_signature(self):
         data = json.dumps(envelope(), sort_keys=True).encode()
         signature = self.keys.sign(data)
-        tampered = json.dumps(envelope(max_uses=99), sort_keys=True).encode()
+        tampered = json.dumps(envelope(max_uses=1), sort_keys=True).encode()
         self.refused("envelope_bad_signature", data=tampered, signature=signature)
 
     def test_foreign_key_is_a_bad_signature(self):
@@ -157,14 +267,26 @@ class SignatureTest(EnvelopeCase):
 
     def test_wrong_namespace_is_a_bad_signature(self):
         data = json.dumps(envelope(), sort_keys=True).encode()
-        self.refused("envelope_bad_signature", data=data,
-                     signature=self.keys.sign(data, namespace="git"))
+        self.refused("envelope_bad_signature", data=data, signature=self.keys.sign(data, namespace="git"))
 
     def test_garbage_signature_is_a_bad_signature(self):
         self.refused("envelope_bad_signature", signature=b"not a signature")
 
     def test_issuer_must_be_the_signing_principal(self):
         self.refused("envelope_bad_signature", envelope(issuer="coordinator"))
+
+    def test_multi_principal_trust_root_binds_issuer_to_its_own_key(self):
+        other = Keys(principal="bob")
+        try:
+            signers = self.keys.write_signers([self.keys.line, other.line], "two_signers")
+            trusted = {self.keys.fingerprint, other.fingerprint}
+            data = json.dumps(envelope(issuer="bob"), sort_keys=True).encode()
+            self.refused("envelope_bad_signature", data=data, signature=self.keys.sign(data),
+                         signers=signers, trusted=trusted)
+            self.assertTrue(self.decide(data=data, signature=other.sign(data), signers=signers,
+                                        trusted=trusted)["ok"])
+        finally:
+            other.close()
 
     def test_schema_invalid_envelope_refuses_before_anything_else(self):
         value = envelope()
@@ -173,11 +295,57 @@ class SignatureTest(EnvelopeCase):
         self.refused("envelope_schema_invalid", envelope(unexpected="field"))
         self.refused("envelope_schema_invalid", data=b'{"id": "a", "id": "b"}')
         self.refused("envelope_schema_invalid", data=b"[]")
+        self.refused("envelope_schema_invalid", data=b"\xff\xfe")
+        self.assertEqual(self.recorder.calls, [])
+
+
+class TrustRootTest(EnvelopeCase):
+    def test_key_not_in_the_owner_pin_is_refused(self):
+        self.refused("envelope_signer_untrusted", trusted=set())
+        self.refused("envelope_signer_untrusted", trusted={"SHA256:" + "A" * 43})
+        self.assertEqual(self.recorder.calls, [])
+
+    def test_implementer_added_key_beside_the_owner_key_is_refused(self):
+        intruder = Keys(principal="kyle")
+        try:
+            signers = self.keys.write_signers([self.keys.line, intruder.line], "with_intruder")
+            data = json.dumps(envelope(), sort_keys=True).encode()
+            self.refused("envelope_signer_untrusted", data=data, signature=intruder.sign(data),
+                         signers=signers)
+            self.refused("envelope_signer_untrusted", data=data, signature=self.keys.sign(data),
+                         signers=signers)
+        finally:
+            intruder.close()
+
+    def test_cert_authority_wildcard_and_malformed_trust_lines_are_refused(self):
+        key = self.keys.public.split()
+        bad_lines = (
+            'kyle cert-authority,namespaces="rizzstack-preauth" %s %s' % (key[0], key[1]),
+            '* namespaces="rizzstack-preauth" %s %s' % (key[0], key[1]),
+            'ky?e namespaces="rizzstack-preauth" %s %s' % (key[0], key[1]),
+            'kyle,bob namespaces="rizzstack-preauth" %s %s' % (key[0], key[1]),
+            '!kyle namespaces="rizzstack-preauth" %s %s' % (key[0], key[1]),
+            'kyle namespaces="rizzstack-preauth,git" %s %s' % (key[0], key[1]),
+            'kyle namespaces="*" %s %s' % (key[0], key[1]),
+            'kyle %s %s' % (key[0], key[1]),
+            'kyle namespaces="rizzstack-preauth" ssh-rsa %s' % key[1],
+            'kyle namespaces="rizzstack-preauth" %s' % key[0],
+            'kyle namespaces="rizzstack-preauth" %s not-base64!' % key[0],
+        )
+        for line in bad_lines:
+            signers = self.keys.write_signers([line], "bad_signers")
+            self.refused("envelope_signers_invalid", signers=signers)
+        self.refused("envelope_signers_invalid", signers=self.keys.dir / "missing_file")
+
+    def test_empty_trust_root_refuses_every_envelope(self):
+        signers = self.keys.write_signers(["# comments only"], "empty_signers")
+        self.refused("envelope_signer_untrusted", signers=signers)
 
 
 class ValidityTest(EnvelopeCase):
     def test_expired_envelope_refuses(self):
         self.refused("envelope_expired", now=NOW + timedelta(days=3))
+        self.refused("envelope_expired", now=NOW + timedelta(days=2))  # expires_at itself is expired
 
     def test_not_yet_valid_envelope_refuses(self):
         self.refused("envelope_not_yet_valid", now=NOW - timedelta(days=1))
@@ -186,13 +354,55 @@ class ValidityTest(EnvelopeCase):
         self.refused("envelope_ttl_exceeded",
                      envelope(expires_at=stamp(NOW - timedelta(hours=1) + timedelta(days=7, seconds=1))))
 
+    def test_expiry_before_issue_and_malformed_timestamps_refuse(self):
+        self.refused("envelope_schema_invalid", envelope(expires_at=stamp(NOW - timedelta(hours=2))))
+        self.refused("envelope_schema_invalid", envelope(expires_at=stamp(NOW - timedelta(hours=1))))
+        for bad in ("2026-11-29T15:00:00", "2026-11-29T15:00:00+00:00", "2026-11-29 15:00:00Z",
+                    "2026-13-29T15:00:00Z", "tomorrow", 1764428400, None):
+            self.refused("envelope_schema_invalid", envelope(expires_at=bad))
+            self.refused("envelope_schema_invalid", envelope(issued_at=bad))
+
+    def test_naive_or_missing_clock_refuses(self):
+        self.refused("envelope_clock_invalid", now=NOW.replace(tzinfo=None))
+        self.refused("envelope_clock_invalid", now=None)
+        self.refused("envelope_clock_invalid", now="2026-11-28T15:00:00Z")
+
+    def test_issuer_that_could_be_read_as_an_option_or_pattern_refuses(self):
+        for issuer in ("*", "ky*", "kyle,bob", "-kyle", "kyle bob", "", " kyle", "kyle\n", "!kyle", 7):
+            self.refused("envelope_schema_invalid", envelope(issuer=issuer))
+
     def test_revoked_envelope_refuses_immediately(self):
-        self.refused("envelope_revoked", measured=facts(revoked=["pa-20261128-01"]))
+        self.refused("envelope_revoked", measured=facts(revoked=[ENVELOPE_ID]))
+
+
+class FactsFailClosedTest(EnvelopeCase):
+    def test_missing_state_refuses_with_a_named_reason(self):
+        for key in ("revoked", "consumed", "nonces", "attempts", "bees_in_flight"):
+            value = facts()
+            del value[key]
+            self.refused("envelope_facts_unproven", measured=value)
+
+    def test_null_or_mistyped_state_refuses(self):
+        for key, bad in (("revoked", None), ("revoked", "pa-1"), ("consumed", None), ("consumed", {}),
+                         ("nonces", None), ("nonces", []), ("attempts", None), ("attempts", []),
+                         ("bees_in_flight", None), ("bees_in_flight", "0"), ("bees_in_flight", -1),
+                         ("bees_in_flight", True)):
+            self.refused("envelope_facts_unproven", measured=facts(**{key: bad}))
+        self.refused("envelope_facts_unproven", measured=[])
 
 
 class ScopeTest(EnvelopeCase):
     def test_wrong_repository_refuses(self):
-        self.refused("envelope_repo_mismatch", repo="mojomast/hyvv")
+        self.refused("envelope_repo_mismatch", repo=OTHER_REPO)
+
+    def test_contract_listed_only_under_another_repo_refuses(self):
+        value = envelope(repos=[REPO, OTHER_REPO], bases={REPO: SIGNED_BASE, OTHER_REPO: SIGNED_BASE})
+        self.refused("envelope_contract_not_listed", value, repo=OTHER_REPO)
+
+    def test_bases_missing_the_repo_refuses(self):
+        value = envelope(repos=[REPO, OTHER_REPO], bases={REPO: SIGNED_BASE})
+        value["contracts"].append(dict(value["contracts"][0], repo=OTHER_REPO))
+        self.refused("envelope_base_mismatch", value, repo=OTHER_REPO)
 
     def test_base_that_does_not_descend_from_the_signed_base_refuses(self):
         self.refused("envelope_base_mismatch", is_ancestor=lambda older, newer: False)
@@ -201,9 +411,21 @@ class ScopeTest(EnvelopeCase):
     def test_contract_not_listed_refuses(self):
         self.refused("envelope_contract_not_listed", contract="c" * 64)
 
-    def test_forbidden_action_class_refuses(self):
-        for action in ("merge_gate_change", "ruleset_change", "deploy", "force_push", "preauth_widen"):
+    def test_action_class_is_an_allowlist(self):
+        self.assertEqual(set(self.pre.ALLOWED_ACTION_CLASSES), ALLOWED_ACTIONS)
+        for action in ("merge_gate_change", "ruleset_change", "deploy", "component_deploy", "force_push",
+                       "preauth_widen", "admin", "merge_gate_change2", "", "MERGE_SLICE", "merge_slice ",
+                       None, 1):
             self.refused("envelope_action_forbidden", envelope(action_class=action))
+
+    def test_tier_above_the_contracts_max_tier_refuses(self):
+        entry = dict(envelope()["contracts"][0], max_tier="T1")
+        self.refused("envelope_tier_exceeded", envelope(contracts=[entry]), tier="T3")
+        self.assertTrue(self.decide(envelope(contracts=[entry]), tier="T1")["ok"])
+        for tier in ("T2", "", None, "t1"):
+            self.refused("envelope_tier_exceeded", envelope(contracts=[entry]), tier=tier)
+        bad = dict(entry, max_tier="T9")
+        self.refused("envelope_schema_invalid", envelope(contracts=[bad]))
 
 
 class OracleTest(EnvelopeCase):
@@ -215,12 +437,11 @@ class OracleTest(EnvelopeCase):
         entry = dict(envelope()["contracts"][0])
         entry["refreeze_of"] = {"contract_sha256": "d" * 64, "source_rev": "e" * 40}
         entry["test_files"] = ["tests/test_review_packet.py"]
-        return envelope(contracts=[entry])
+        return envelope(contracts=[entry], action_class="refreeze_contract")
 
     def test_refreeze_with_an_identical_oracle_is_allowed(self):
         new = dict(self.OLD, **{"src/thing.py": "8" * 40})  # product code may differ
-        self.assertTrue(self.decide(self.refreeze(),
-                                    measured=facts(oracle={"old": self.OLD, "new": new}))["ok"])
+        self.assertTrue(self.decide(self.refreeze(), measured=facts(oracle={"old": self.OLD, "new": new}))["ok"])
 
     def test_refreeze_that_changes_any_oracle_file_refuses(self):
         for path in ("tests/test_review_packet.py", "tests/conftest.py", "pyproject.toml",
@@ -230,47 +451,92 @@ class OracleTest(EnvelopeCase):
                          measured=facts(oracle={"old": self.OLD, "new": new}))
 
     def test_refreeze_that_adds_or_removes_an_oracle_file_refuses(self):
-        added = dict(self.OLD, **{"tests/plugins/hook.py": "a" * 40, "x.pth": "b" * 40})
-        self.refused("envelope_oracle_changed", self.refreeze(),
-                     measured=facts(oracle={"old": self.OLD, "new": added}))
+        for extra in ("tests/plugins/hook.py", "x.pth", "tests/helpers.py", "tests/test_other.py",
+                      "noxfile.py", ".github/workflows/ci.yml", "requirements-dev.txt", "./tests/../conftest.py"):
+            self.refused("envelope_oracle_changed", self.refreeze(),
+                         measured=facts(oracle={"old": self.OLD, "new": dict(self.OLD, **{extra: "a" * 40})}))
         removed = {k: v for k, v in self.OLD.items() if k != "tests/conftest.py"}
         self.refused("envelope_oracle_changed", self.refreeze(),
                      measured=facts(oracle={"old": self.OLD, "new": removed}))
 
     def test_refreeze_without_measured_oracle_refuses(self):
         self.refused("envelope_oracle_unproven", self.refreeze(), measured=facts(oracle=None))
+        self.refused("envelope_oracle_unproven", self.refreeze(), measured=facts(oracle={"old": self.OLD}))
 
-    def test_oracle_paths_cover_tests_conftest_config_fixtures_and_hooks(self):
-        paths = self.pre.oracle_paths(
-            ["tests/test_a.py", "src/x.py", "tests/conftest.py", "a/b/conftest.py", "pytest.ini",
-             "tox.ini", "setup.cfg", "pyproject.toml", "tests/fixtures/f.json", "tests/data/d.txt",
-             "sitecustomize.py", "usercustomize.py", "x.pth", "tests/plugins/p.py", "docs/a.md"],
-            test_files=["tests/test_a.py"])
-        self.assertEqual(paths, {"tests/test_a.py", "tests/conftest.py", "a/b/conftest.py",
-                                 "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml",
-                                 "tests/fixtures/f.json", "tests/data/d.txt", "sitecustomize.py",
-                                 "usercustomize.py", "x.pth", "tests/plugins/p.py"})
+    def test_oracle_paths_cover_tests_conftest_config_fixtures_dependencies_ci_and_hooks(self):
+        inside = ["tests/test_a.py", "tests/conftest.py", "a/b/conftest.py", "pytest.ini", "tox.ini",
+                  "setup.cfg", "pyproject.toml", "setup.py", "noxfile.py", ".coveragerc",
+                  "tests/fixtures/f.json", "tests/data/d.txt", "tests/helpers.py", "tests/__init__.py",
+                  "tests/unit/test_b.py", "pkg/test_c.py", "pkg/c_test.py", "sitecustomize.py",
+                  "usercustomize.py", "x.pth", "lib/site.pth", "tests/plugins/p.py", "requirements.txt",
+                  "requirements-dev.txt", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
+                  ".github/workflows/ci.yml", ".github/workflows/x.yaml"]
+        outside = ["src/x.py", "docs/a.md", "README.md", "src/testing_utils.py"]
+        self.assertEqual(self.pre.oracle_paths(inside + outside, test_files=["tests/test_a.py"]), set(inside))
+
+    def test_oracle_paths_normalise_before_matching(self):
+        got = self.pre.oracle_paths(["./tests/../conftest.py", "tests//conftest.py", "./pytest.ini",
+                                     "Tests/Conftest.py", "tests\\conftest.py"], test_files=[])
+        self.assertEqual(got, {"conftest.py", "tests/conftest.py", "pytest.ini", "Tests/Conftest.py"})
+        for bad in ("../outside/conftest.py", "/abs/conftest.py"):
+            with self.assertRaises(self.pre.PreauthRefused):
+                self.pre.oracle_paths([bad], test_files=[])
 
 
 class BudgetTest(EnvelopeCase):
     def test_exhausted_merge_budget_refuses(self):
-        used = [{"envelope_id": "pa-20261128-01", "nonce": "4f1c2a9e8b7d6c5b4a39281706f5e4d3",
-                 "contract_sha256": "f" * 64}] * 2
-        self.refused("envelope_budget_exhausted", measured=facts(consumed=used))
+        self.refused("envelope_budget_exhausted", measured=facts(consumed=used(2)))
 
     def test_max_uses_is_a_ceiling_too(self):
-        used = [{"envelope_id": "pa-20261128-01", "nonce": "4f1c2a9e8b7d6c5b4a39281706f5e4d3",
-                 "contract_sha256": "f" * 64}]
-        self.refused("envelope_budget_exhausted", envelope(max_uses=1), measured=facts(consumed=used))
+        self.refused("envelope_budget_exhausted", envelope(max_uses=1), measured=facts(consumed=used(1)))
+
+    def test_uses_of_another_envelope_do_not_count(self):
+        self.assertTrue(self.decide(measured=facts(consumed=used(5, envelope_id="pa-other")))["ok"])
+
+    def test_attempts_per_contract_are_capped(self):
+        self.refused("envelope_budget_exhausted", measured=facts(attempts={CONTRACT: 3}))
+        self.assertTrue(self.decide(measured=facts(attempts={CONTRACT: 2, "c" * 64: 9}))["ok"])
+
+    def test_bees_in_flight_are_capped_for_wave_dispatch(self):
+        self.refused("envelope_budget_exhausted", envelope(action_class="dispatch_wave"),
+                     measured=facts(bees_in_flight=3))
+        self.assertTrue(self.decide(envelope(action_class="dispatch_wave"), measured=facts(bees_in_flight=2))["ok"])
+
+    def test_budget_shape_is_bounded(self):
+        for budget in ({"max_merges": 0, "max_bees": 3, "max_attempts_per_contract": 3},
+                       {"max_merges": 2, "max_bees": 5, "max_attempts_per_contract": 3},
+                       {"max_merges": 2, "max_bees": 3, "max_attempts_per_contract": 0},
+                       {"max_merges": 2, "max_bees": 3},
+                       {"max_merges": 2, "max_bees": 3, "max_attempts_per_contract": 3, "extra": 1},
+                       {"max_merges": "2", "max_bees": 3, "max_attempts_per_contract": 3},
+                       {"max_merges": True, "max_bees": 3, "max_attempts_per_contract": 3}):
+            self.refused("envelope_schema_invalid", envelope(budget=budget))
+        for max_uses in (0, -1, "2", True, 2.0):
+            self.refused("envelope_schema_invalid", envelope(max_uses=max_uses))
 
     def test_replayed_use_of_the_same_contract_refuses(self):
-        used = [{"envelope_id": "pa-20261128-01", "nonce": "4f1c2a9e8b7d6c5b4a39281706f5e4d3",
-                 "contract_sha256": CONTRACT}]
-        self.refused("envelope_replayed", measured=facts(consumed=used))
+        self.refused("envelope_replayed", measured=facts(consumed=used(1, contract=CONTRACT)))
 
     def test_nonce_reused_by_another_envelope_refuses(self):
-        self.refused("envelope_nonce_reused",
-                     measured=facts(nonces={"4f1c2a9e8b7d6c5b4a39281706f5e4d3": "pa-20261101-07"}))
+        self.refused("envelope_nonce_reused", measured=facts(nonces={NONCE: "pa-20261101-07"}))
+
+
+class VerifierTest(EnvelopeCase):
+    def test_missing_ssh_keygen_refuses(self):
+        self.refused("envelope_verifier_unavailable", fail="missing")
+
+    def test_hanging_ssh_keygen_refuses_within_a_bounded_timeout(self):
+        self.refused("envelope_verifier_unavailable", fail="timeout")
+        self.assertTrue(self.recorder.timeouts, "ssh-keygen must be run with a timeout")
+        self.assertTrue(all(t is not None and 0 < t <= 60 for t in self.recorder.timeouts[:1]),
+                        self.recorder.timeouts)
+
+    def test_every_process_is_ssh_keygen_verify(self):
+        self.decide()
+        self.assertEqual([argv[1:3] for argv in self.recorder.calls], [["-Y", "verify"]])
+        argv = self.recorder.calls[0]
+        self.assertIn("-n", argv)
+        self.assertEqual(argv[argv.index("-n") + 1], "rizzstack-preauth")
 
 
 class KeyCustodyTest(unittest.TestCase):
@@ -278,32 +544,50 @@ class KeyCustodyTest(unittest.TestCase):
         pre = load_module()
         self.assertEqual(pre.NAMESPACE, "rizzstack-preauth")
         self.assertEqual(pre.MAX_TTL_SECONDS, 7 * 24 * 3600)
-        for name in ("sign", "sign_envelope", "mint", "generate_key"):
-            self.assertFalse(hasattr(pre, name), name)
-        source = MODULE.read_text(encoding="utf-8")
-        self.assertNotIn('"-Y", "sign"', source)
-        self.assertNotIn("PRIVATE KEY", source)
+        for name in dir(pre):
+            self.assertNotRegex(name.lower(), r"(^|_)(sign|mint|generate)(_|$)", name)
+        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+        forbidden = {"Ed25519PrivateKey", "SigningKey", "PrivateKey", "load_ssh_private_key",
+                     "load_pem_private_key", "nacl", "cryptography", "paramiko"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                self.assertNotIn(node.id, forbidden)
+            elif isinstance(node, ast.Attribute):
+                self.assertNotIn(node.attr, forbidden)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in node.names] + [getattr(node, "module", None) or ""]
+                for name in names:
+                    self.assertNotIn(name.split(".")[0], forbidden, name)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                self.assertNotIn("PRIVATE KEY", node.value)
 
-    def test_allowed_signers_holds_public_keys_only_and_is_namespace_bound(self):
+    def test_trust_root_is_frozen_and_holds_only_pinned_owner_keys(self):
         self.assertTrue(SIGNERS.is_file(), "missing policy/allowed_signers")
+        self.assertEqual(hashlib.sha256(SIGNERS.read_bytes()).hexdigest(), ALLOWED_SIGNERS_SHA256,
+                         "policy/allowed_signers is read-only; a new key needs an owner-approved contract")
         for line in SIGNERS.read_text(encoding="utf-8").splitlines():
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
-            self.assertIn('namespaces="rizzstack-preauth"', line)
-            self.assertRegex(line, r"\s(ssh-ed25519|sk-ssh-ed25519@openssh\.com)\s")
-        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
-                                 text=True, check=True).stdout.split()
-        marker = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
-        for path in tracked:
+            self.assertNotIn("cert-authority", line)
+            self.assertRegex(line, r'^[A-Za-z0-9._@-]+ namespaces="rizzstack-preauth" '
+                                   r'(ssh-ed25519|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+(\s.*)?$')
+            self.assertIn(fingerprint(" ".join(line.split()[2:4])), OWNER_FINGERPRINTS)
+
+    def test_no_tracked_file_holds_private_key_material(self):
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True,
+                                 check=True).stdout.decode().split("\0")
+        marker = re.compile(r"-----BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY-----|" + "PuTTY-User-" + "Key-File")
+        for path in filter(None, tracked):
             target = ROOT / path
-            if target.is_file() and target.stat().st_size < 1_000_000:
-                self.assertNotIn(marker, target.read_text(encoding="utf-8", errors="ignore"), path)
+            if target.is_file() and target.stat().st_size < 2_000_000:
+                self.assertIsNone(marker.search(target.read_text(encoding="utf-8", errors="ignore")), path)
 
     def test_schema_matches_the_checker(self):
         pre = load_module()
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         self.assertEqual(set(schema["required"]), set(pre.REQUIRED_FIELDS))
         self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(set(schema["properties"]["action_class"]["enum"]), ALLOWED_ACTIONS)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ POLICY = ROOT / "policy" / "preauth.md"
 SCHEMA = ROOT / "schemas" / "preauth.schema.json"
 
 FIELDS = {"id", "action_class", "conditions", "max_uses", "expires_at", "created_from",
-          "schema", "issuer", "issued_at", "nonce", "repos", "bases", "contracts", "budget"}
+          "schema", "issuer", "issued_at", "nonce", "repos", "bases", "contracts", "budget", "review"}
 
 
 class PreauthPolicyTest(unittest.TestCase):
