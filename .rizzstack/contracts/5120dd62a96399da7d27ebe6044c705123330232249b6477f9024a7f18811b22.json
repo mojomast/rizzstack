@@ -1,0 +1,470 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "Envelope fields: schema rizzstack.preauth/2 and id, issuer, issued_at, expires_at, nonce, action_class, repos, bases, contracts, review, budget, conditions, max_uses, created_from; the JSON schema and the checker require exactly these (additionalProperties false), and the schema's action_class is an enum equal to ALLOWED_ACTION_CLASSES.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_schema_requires_the_envelope_fields",
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_schema_matches_the_checker"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "A malformed envelope (missing or extra field, duplicate key, non-object) refuses envelope_schema_invalid before any other check.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_schema_invalid_envelope_refuses_before_anything_else"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "check_for_tests(data, signature, *, allowed_signers=, trusted_fingerprints=, repo=, base_rev=, contract_sha256=, tier=, now=, facts=, is_ancestor=) (test-only; the decision tests drive it with a temporary trust root) returns ok with envelope_id, contract_sha256 and max_tier only for a correctly signed, in-date, unrevoked, listed, in-tier, in-budget first use.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_valid_signed_envelope_authorizes_one_listed_contract"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "The signature is verified with ssh-keygen -Y verify, identity = issuer, namespace rizzstack-preauth, over the exact bytes; tampered bytes, a foreign key, another namespace, a garbage signature or an issuer that is not the signing principal refuse envelope_bad_signature; with two principals the issuer binds to its own key only.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_tampered_envelope_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_foreign_key_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_wrong_namespace_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_garbage_signature_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_issuer_must_be_the_signing_principal",
+        "tests/test_preauth_envelope.py::SignatureTest::test_multi_principal_trust_root_binds_issuer_to_its_own_key"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "Trust root: every key line in allowed_signers must have a SHA256 fingerprint in the checker's pin (OWNER_FINGERPRINTS in production; the test-only entry point takes a temporary pin); an empty file, a key outside the pin, or an implementer-added key beside the owner key refuses envelope_signer_untrusted.",
+      "tests": [
+        "tests/test_preauth_envelope.py::TrustRootTest::test_empty_trust_root_refuses_every_envelope",
+        "tests/test_preauth_envelope.py::TrustRootTest::test_key_not_in_the_owner_pin_is_refused",
+        "tests/test_preauth_envelope.py::TrustRootTest::test_implementer_added_key_beside_the_owner_key_is_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "statement": "cert-authority lines, wildcard or negated or comma-separated principals, missing or wider namespaces, other key types and malformed lines refuse envelope_signers_invalid.",
+      "tests": [
+        "tests/test_preauth_envelope.py::TrustRootTest::test_cert_authority_wildcard_and_malformed_trust_lines_are_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-007",
+      "regression": true,
+      "statement": "policy/allowed_signers is frozen: its sha256 equals ALLOWED_SIGNERS_SHA256 in the test file and its keys equal OWNER_FINGERPRINTS (empty in this slice); adding a key needs a new owner-approved contract.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_trust_root_is_frozen_and_holds_only_pinned_owner_keys"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-008",
+      "statement": "now >= expires_at refuses envelope_expired; now < issued_at refuses envelope_not_yet_valid; expires_at more than 7 days after issued_at refuses envelope_ttl_exceeded even if signed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_expired_envelope_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_not_yet_valid_envelope_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_longer_than_seven_days_refuses",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_states_the_seven_day_ceiling"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-009",
+      "statement": "Timestamps must be exact YYYY-MM-DDTHH:MM:SSZ and real dates, and expires_at must be after issued_at, else envelope_schema_invalid; a naive or missing clock refuses envelope_clock_invalid; an issuer that could be read as an option or pattern (leading -, *, ?, !, comma, space, non-string) refuses envelope_schema_invalid.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_expiry_before_issue_and_malformed_timestamps_refuse",
+        "tests/test_preauth_envelope.py::ValidityTest::test_naive_or_missing_clock_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_issuer_that_could_be_read_as_an_option_or_pattern_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-010",
+      "statement": "An envelope id in the measured revocation list refuses envelope_revoked, effective immediately.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_revoked_envelope_refuses_immediately"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-011",
+      "statement": "Missing, null or mistyped revocation, consumed-use, nonce, attempt or bees-in-flight state refuses envelope_facts_unproven (fail closed).",
+      "tests": [
+        "tests/test_preauth_envelope.py::FactsFailClosedTest::test_missing_state_refuses_with_a_named_reason",
+        "tests/test_preauth_envelope.py::FactsFailClosedTest::test_null_or_mistyped_state_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-012",
+      "statement": "action_class is an allowlist (merge_slice, refreeze_contract, vendor_sync, close_superseded_pr, dispatch_wave); anything else, including deploy, gate/lane, rulesets, force-push, preauth widening and case variants, refuses envelope_action_forbidden; the policy names every never-pre-authorizable class.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_action_class_is_an_allowlist",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_names_every_never_preauthorizable_class"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-013",
+      "statement": "A repository not in repos refuses envelope_repo_mismatch; a repo missing from bases, or a base that does not descend from bases[repo], refuses envelope_base_mismatch; a contract listed only under another repo, or not listed, refuses envelope_contract_not_listed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_wrong_repository_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_bases_missing_the_repo_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_base_that_does_not_descend_from_the_signed_base_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_contract_listed_only_under_another_repo_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_contract_not_listed_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-014",
+      "statement": "A slice tier above the contract's max_tier (T1 < T3) or an unknown tier refuses envelope_tier_exceeded.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_tier_above_the_contracts_max_tier_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-015",
+      "statement": "oracle_paths covers tests, conftest, pytest/tox/setup.cfg/pyproject/setup.py/noxfile/.coveragerc, fixtures/data/helpers/__init__, test_*.py and *_test.py anywhere, sitecustomize/usercustomize/.pth/tests/plugins, requirements*, uv.lock, poetry.lock, Pipfile* and .github/workflows/*; it normalises ./, //, .. and backslashes first and refuses ../ or absolute paths.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_oracle_paths_cover_tests_conftest_config_fixtures_dependencies_ci_and_hooks",
+        "tests/test_preauth_envelope.py::OracleTest::test_oracle_paths_normalise_before_matching"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-016",
+      "statement": "A re-freeze is allowed only with identical oracle files at the old and new source_rev (product code may differ); changing, adding or removing any oracle file refuses envelope_oracle_changed; no measured oracle fact refuses envelope_oracle_unproven.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_with_an_identical_oracle_is_allowed",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_changes_any_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_adds_or_removes_an_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_without_measured_oracle_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-017",
+      "statement": "Budget: exact keys max_merges (int >= 1), max_bees (1..4), max_attempts_per_contract (int >= 1), max_uses a positive int (no bool/float), else envelope_schema_invalid; uses >= min(max_uses, max_merges), attempts >= max_attempts_per_contract, or dispatch_wave with bees_in_flight >= max_bees refuse envelope_budget_exhausted; uses of another envelope do not count.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_budget_shape_is_bounded",
+        "tests/test_preauth_envelope.py::BudgetTest::test_exhausted_merge_budget_refuses",
+        "tests/test_preauth_envelope.py::BudgetTest::test_max_uses_is_a_ceiling_too",
+        "tests/test_preauth_envelope.py::BudgetTest::test_attempts_per_contract_are_capped",
+        "tests/test_preauth_envelope.py::BudgetTest::test_bees_in_flight_are_capped_for_wave_dispatch",
+        "tests/test_preauth_envelope.py::BudgetTest::test_uses_of_another_envelope_do_not_count"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-018",
+      "statement": "A second use for the same contract refuses envelope_replayed; a nonce recorded for a different envelope id refuses envelope_nonce_reused.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_replayed_use_of_the_same_contract_refuses",
+        "tests/test_preauth_envelope.py::BudgetTest::test_nonce_reused_by_another_envelope_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-019",
+      "statement": "Recorded at the process layer (subprocess.Popen and the os exec/spawn/system/fork family), check() starts exactly one process, argv ssh-keygen -Y verify; a missing ssh-keygen or one that hangs (bounded timeout) refuses envelope_verifier_unavailable.",
+      "tests": [
+        "tests/test_preauth_envelope.py::VerifierTest::test_every_process_is_ssh_keygen_verify",
+        "tests/test_preauth_envelope.py::VerifierTest::test_missing_ssh_keygen_refuses",
+        "tests/test_preauth_envelope.py::VerifierTest::test_hanging_ssh_keygen_refuses_within_a_bounded_timeout"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-020",
+      "statement": "Key custody: the module defines no sign/mint/generate name (AST and runtime names) and imports no signing library.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_module_verifies_and_never_signs"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-021",
+      "regression": true,
+      "statement": "No tracked file contains private key material of any common format.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_no_tracked_file_holds_private_key_material"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-022",
+      "statement": "policy/preauth.md states signed approval and immediate revocation and that agents never create, widen or extend envelopes.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_signed_approval_and_immediate_revocation"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-023",
+      "statement": "policy/preauth.md proposes P1-P5 with mechanical conditions, a ledger and a daily digest; P1 is the first numbered condition and covers frozen test blobs, conftest, pytest config and fixtures.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_proposes_the_five_initial_envelopes",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_mechanical_conditions_and_a_daily_digest",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_rejects_a_refreeze_that_changes_frozen_test_blobs",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_is_a_numbered_condition_covering_conftest_and_fixtures"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-024",
+      "statement": "scripts/preauth.py defines OWNER_FINGERPRINTS as a frozen tuple (empty in this slice) equal to the test pin, with no duplicates, each SHA256:<43 base64>.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_owner_fingerprints_constant_is_frozen_and_equals_the_test_pin"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-025",
+      "statement": "The production entry point check(data, signature, repo, base_rev, contract_sha256, tier, now, facts, is_ancestor) takes exactly these parameters (no *args/**kwargs, no allowed_signers/trusted_fingerprints override; passing one is a TypeError) and, with the committed empty trust root, refuses every envelope envelope_signer_untrusted.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_check_takes_no_trust_root_override",
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_the_committed_trust_root_refuses_every_envelope"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-026",
+      "statement": "check() reads policy/allowed_signers from the checkout the module itself lives in (the base checkout) and uses the module constant OWNER_FINGERPRINTS: a copy of the module in a tree whose allowed_signers names the key refuses with the empty pin and accepts with the key's fingerprint in the pin; the working directory and environment variables never redirect the trust root.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_check_reads_the_base_checkout_trust_root_and_the_module_pin",
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_cwd_and_environment_do_not_redirect_the_trust_root"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-027",
+      "statement": "Trust-root overrides exist only in check_for_tests (docstring says test-only); no other public function takes trusted_fingerprints, and the module never calls or references check_for_tests.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_overrides_live_only_in_the_test_only_entry_point"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-028",
+      "regression": true,
+      "statement": "The static one-process rule (process_violations, frozen in the test file) accepts the must-pass stub and refuses all 22 must-fail stubs under tests/fixtures/preauth/must_fail/, including GROKCHAT's split-string sign stub (two process calls) and the Popen-alias stub (from subprocess import Popen).",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_safe_verify_stub_passes_the_rule",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_must_fail_stubs_are_refused",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_grokchat_split_string_and_popen_alias_stubs_are_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-029",
+      "statement": "scripts/preauth.py obeys the rule: exactly one subprocess.run/Popen/call/check_call/check_output call whose single argument is the literal list ssh-keygen, -Y, verify, -f, <name>, -I, <name>, -n, <name>, -s, <name> (-f only in that slot, as -Y verify requires the allowed_signers file), keywords only input/capture_output/timeout/stdin/stdout/stderr/check with timeout required; no import alias or from-import of subprocess, other subprocess references only to its exception classes; no os system/popen/exec*/spawn*/posix_spawn*/fork*/startfile/_exit; no _posixsubprocess, ctypes, importlib, multiprocessing, pty, runpy, asyncio, builtins or signing libraries; no __import__, eval, exec, compile, getattr, setattr, globals, locals, vars; no sys.modules or dunder-dict access; no string literal 'sign' or '-Y sign'.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_preauth_module_obeys_the_rule"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "ssh-keygen with -Y (OpenSSH >= 8.2) is present on the box and on GitHub-hosted runners; if it is missing or hangs the checker refuses envelope_verifier_unavailable.",
+    "policy/allowed_signers is committed by RED with comments only and is read_only; adding the owner's public key is a separate owner-approved contract that updates the pin.",
+    "tests/test_preauth_policy.py is r3's file with one test re-cut (hash approval -> signed approval) and FIELDS extended (review added).",
+    "P4 (deploy) is proposed in policy/preauth.md but deploy is not in ALLOWED_ACTION_CLASSES (t1623u needs a typed yes per deploy); whether to ever pre-authorize deploys is the owner's decision.",
+    "Facts (revocations, consumed uses, nonces, attempts, bees in flight, oracle blob maps, ancestry) are supplied by the caller; this slice only decides from them, and missing facts refuse. The trust root and owner pin are never caller-supplied in production.",
+    "ssh-keygen -Y verify requires -f <allowed_signers>, so the process rule pins -f to that one argv slot instead of banning it.",
+    "A throwaway GREEN prototype (not committed) passed every test in the repo (425 passed, 3 skipped); injecting the split-string sign stub or a Popen from-import into it makes the rule test fail."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes",
+      "committing any private key",
+      "adding a key to policy/allowed_signers"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "preauth-envelope",
+  "interfaces": [
+    {
+      "change": "add",
+      "kind": "module",
+      "name": "scripts/preauth.py"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "load_envelope"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "verify_signature"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "oracle_paths"
+    },
+    {
+      "change": "add",
+      "kind": "exception",
+      "name": "PreauthRefused"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "NAMESPACE"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "MAX_TTL_SECONDS"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "REQUIRED_FIELDS"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "ALLOWED_ACTION_CLASSES"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "VERIFY_TIMEOUT_SECONDS"
+    },
+    {
+      "change": "add",
+      "kind": "file",
+      "name": "schemas/preauth.schema.json"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "check"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "check_for_tests"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "OWNER_FINGERPRINTS"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "TRUST_ROOT"
+    }
+  ],
+  "notes": [
+    "Wiring is out of scope and is the separate named slice preauth-wiring: the gate/lane call check() (never check_for_tests) with measured facts; its contract must freeze that call site. It must land before any unattended T1/T3 use of envelopes. Recommended to sequence it after gate-authority (S1), because it touches the same vendored lease_tamper.py and merge_lane_v5.py in seven repos.",
+    "Until preauth-wiring lands, envelopes authorize nothing; every owner approval stays a typed line.",
+    "Adding the owner's public key needs a new owner-approved contract that updates policy/allowed_signers, ALLOWED_SIGNERS_SHA256 and OWNER_FINGERPRINTS (test pin and module constant) together.",
+    "Residual (owner action): the owner's own GitHub token on agent hosts can still post as the owner login; only rotating or scoping that credential fixes it."
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "check() returns ok only for a valid, trusted, in-date, unrevoked, allowlisted, listed, in-tier, in-budget first use",
+      "named refusals: envelope_schema_invalid, envelope_clock_invalid, envelope_signers_invalid, envelope_signer_untrusted, envelope_bad_signature, envelope_verifier_unavailable, envelope_expired, envelope_not_yet_valid, envelope_ttl_exceeded, envelope_facts_unproven, envelope_revoked, envelope_action_forbidden, envelope_repo_mismatch, envelope_base_mismatch, envelope_contract_not_listed, envelope_tier_exceeded, envelope_oracle_unproven, envelope_oracle_changed, envelope_nonce_reused, envelope_replayed, envelope_budget_exhausted",
+      "the module starts only ssh-keygen -Y verify and never signs",
+      "check() has no trust-root override; OWNER_FINGERPRINTS is empty",
+      "the module's only process call is a literal ssh-keygen -Y verify argv"
+    ],
+    "summary": "The owner signs one bounded envelope with ssh-keygen -Y sign -n rizzstack-preauth on their own machine. policy/allowed_signers is a frozen, read-only trust root (hash-pinned by the tests; empty in this slice so every envelope refuses). The production entry point check() reads it from the module's own base checkout and requires every key to match the frozen module constant OWNER_FINGERPRINTS; it takes no path or fingerprint override (only the clearly test-only check_for_tests does). scripts/preauth.py (stdlib plus ssh-keygen) verifies and decides one use from measured facts, refusing with a named reason on any doubt, including missing state; a static AST rule pins its single process call to a literal ssh-keygen -Y verify argv. This slice does not wire the checker into the gate or lane: that is the separate named slice preauth-wiring, which must call check() only."
+  },
+  "review": {
+    "approved_at": null,
+    "approved_by": null,
+    "contract_sha256": "5120dd62a96399da7d27ebe6044c705123330232249b6477f9024a7f18811b22",
+    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
+    "status": "draft"
+  },
+  "risk": {
+    "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
+    "reasons": [
+      "authorization and crypto verification surface"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/preauth.py",
+      "policy/preauth.md",
+      "policy/README.md",
+      "schemas/preauth.schema.json"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/**",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "policy/allowed_signers",
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      "policy/rulesets/**"
+    ],
+    "test_files": [
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/fixtures/preauth/**"
+    ]
+  },
+  "source_rev": "1d2c2ea7e1f5f8ff0824ef5028dacc59ebd0cf63",
+  "supersedes": [
+    "preauth-policy r3 (c05c62c7)",
+    "preauth-envelope draft 1a3d79af (r1)",
+    "preauth-envelope draft 84d5fdb4 (r2)"
+  ],
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Owner-signed pre-authorization envelopes r3: frozen trust root and owner pin, no-override production entry point, static one-process rule",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_envelope.py tests/test_preauth_policy.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
