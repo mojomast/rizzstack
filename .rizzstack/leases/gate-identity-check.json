@@ -1,0 +1,37 @@
+{
+  "branch": "feat/gate-identity-check",
+  "contract_id": "gate-identity-check",
+  "contract_sha256": "ba367f1b2661b475269bdbab192d69e055e7d7729dc2bef5bb770b0a17a779d6",
+  "derived_from": {
+    "approved_at": "2026-11-27T20:13:30Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "contract": ".rizzstack/contracts/ba367f1b2661b475269bdbab192d69e055e7d7729dc2bef5bb770b0a17a779d6.json"
+  },
+  "id": "gate-identity-check",
+  "lease_version": "rizzstack.lease/1",
+  "review": {
+    "approved_at": "2026-11-27T20:13:30Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
+    "status": "frozen"
+  },
+  "scope": {
+    "assigned_files": [
+      ".github/scripts/lease_tamper.py"
+    ],
+    "prohibited": [
+      "tests/test_gate_review_identity.py::ReviewIdentityTest",
+      "CHANGELOG.md",
+      ".rizzstack/**"
+    ],
+    "read_only": [
+      "tests/fixtures/review_lines.json",
+      "scripts/merge_lane_v5.py"
+    ],
+    "test_files": [
+      "tests/test_gate_review_identity.py"
+    ]
+  },
+  "slice": "gate-identity-check",
+  "source_rev": "15b2a99cfaadcb5bfa9c30369e50651a0997c401"
+}

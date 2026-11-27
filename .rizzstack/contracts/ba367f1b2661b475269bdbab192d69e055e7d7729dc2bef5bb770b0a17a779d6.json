@@ -1,0 +1,138 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "regression": true,
+      "statement": "An approve_independent review from rizzstack-reviewer[bot] satisfies independent_review at the head.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_reviewer_app_login_is_accepted"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "regression": true,
+      "statement": "An approve_independent review from the owner login satisfies independent_review at the head.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_owner_login_is_accepted"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "The same body from any other login is not an approval.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_any_other_login_is_not_an_approval"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "A review record with no user login is not an approval.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_a_review_without_a_login_is_not_an_approval"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "review_identity_ok accepts exactly the reviewer app and owner logins and refuses an empty record.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_identity_helper_names_the_two_allowed_identities"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "regression": true,
+      "statement": "review_form still reports changes_requested for a rejection posted by any login.",
+      "tests": [
+        "tests/test_gate_review_identity.py::ReviewIdentityTest::test_a_rejection_from_any_login_still_governs"
+      ],
+      "verification": "test"
+    }
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "id": "gate-identity-check",
+  "interfaces": [],
+  "outcome": {
+    "observable_behavior": [
+      "the reviewer app login is accepted",
+      "any other login is not an approval",
+      "a rejection from any login still governs"
+    ],
+    "summary": "The vendored gate checks the review's author login: an approve_independent attestation counts only from rizzstack-reviewer[bot] or the owner's login. A rejection still governs whatever account posted it. The six repos are re-vendored byte-identically after this lands."
+  },
+  "review": {
+    "approved_at": "2026-11-27T20:13:30Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "contract_sha256": "ba367f1b2661b475269bdbab192d69e055e7d7729dc2bef5bb770b0a17a779d6",
+    "status": "approved",
+    "test_collection": {
+      "collected": 6,
+      "manifest_sha256": "c0949fb146757928415626ad4d2091942c176ff9a9aa0f7e3f383fb8b9c237df",
+      "source_rev": "15b2a99cfaadcb5bfa9c30369e50651a0997c401"
+    }
+  },
+  "risk": {
+    "blast_radius": "every non-slice merge in all six repos and the six vendored copies",
+    "reasons": [
+      "this is the gate that decides whether a PR has an independent review"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      ".github/scripts/lease_tamper.py"
+    ],
+    "prohibited": [
+      "tests/test_gate_review_identity.py::ReviewIdentityTest",
+      "CHANGELOG.md",
+      ".rizzstack/**"
+    ],
+    "read_only": [
+      "tests/fixtures/review_lines.json",
+      "scripts/merge_lane_v5.py"
+    ],
+    "test_files": [
+      "tests/test_gate_review_identity.py"
+    ]
+  },
+  "source_rev": "15b2a99cfaadcb5bfa9c30369e50651a0997c401",
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Gate accepts independent approvals only from the reviewer app or owner",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_gate_review_identity.py::ReviewIdentityTest"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}

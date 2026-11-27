@@ -1,0 +1,39 @@
+{
+  "branch": "feat/preauth-policy",
+  "contract_id": "preauth-policy",
+  "contract_sha256": "10d4cdeb93a02353670cbc6fe2e461c8096c2d6b457e22bd4fb209aa4a702fa0",
+  "derived_from": {
+    "approved_at": "2026-11-27T20:13:12Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "contract": ".rizzstack/contracts/10d4cdeb93a02353670cbc6fe2e461c8096c2d6b457e22bd4fb209aa4a702fa0.json"
+  },
+  "id": "preauth-policy",
+  "lease_version": "rizzstack.lease/1",
+  "review": {
+    "approved_at": "2026-11-27T20:13:12Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
+    "status": "frozen"
+  },
+  "scope": {
+    "assigned_files": [
+      "policy/preauth.md",
+      "schemas/preauth.schema.json",
+      "policy/README.md"
+    ],
+    "prohibited": [
+      "tests/test_preauth_policy.py::PreauthPolicyTest",
+      "CHANGELOG.md",
+      ".rizzstack/**"
+    ],
+    "read_only": [
+      ".github/scripts/lease_tamper.py",
+      "policy/outside-review.md"
+    ],
+    "test_files": [
+      "tests/test_preauth_policy.py"
+    ]
+  },
+  "slice": "preauth-policy",
+  "source_rev": "0006f6148624ba0b9349f772e2580a8da3ea4a3e"
+}
