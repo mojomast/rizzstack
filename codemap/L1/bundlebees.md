@@ -13,7 +13,10 @@ Pinned `cb8946e` (plugin.yaml 0.2.0; last tag v0.1.1) · https://github.com/mojo
 | Plugin registration, tools, hook | `bundlebees/__init__.py` (registers tools; `pre_tool_call` hook asks Hermes approval before cancel/review), `bundlebees/plugin.yaml` |
 | Tool schemas + handlers (`bundlebees_status`, `bundlebees_dispatch`, `bundlebees_attempt`, `bundlebees_host_prompt`, `bundlebees_route_preview`; optional `bundlebees_rails`) | `bundlebees/bundlebees_plugin/tools.py` (`_dispatch` holds the risk-tier and contract gates) |
 | Brief validation | `bundlebees/bundlebees_plugin/brief.py` |
-| Risk tiers: path-derived floor, effective tier | `bundlebees/bundlebees_plugin/risk.py`; tier → process policy table `bundlebees/bundlebees_plugin/risk_policy.py` |
+| Risk tiers: path-derived floor, effective tier | `bundlebees/bundlebees_plugin/risk.py`, floor data `bundlebees/bundlebees_plugin/policy/risk-floor.json` (the tier → process table is parked unwired in `bundlebees/contrib/unwired/risk_policy.py`) |
+| Oracle lock: tests judged with main's pytest config, autoload off, `python -P`; harness-owned names refused in patches | `bundlebees/bundlebees_plugin/oracle_lock.py`, used by `bundlebees/bundlebees_plugin/verify_local.py` |
+| Test-subversion scan (repo-backed; base findings subtracted only on unchanged lines and recorded in the verify evidence) | `bundlebees/bundlebees_plugin/subversion_scan.py` |
+| Verify sandbox, pinned tools (uv, pwsh) staged with owner/mode checks and recorded hashes | `bundlebees/bundlebees_plugin/sandbox.py` |
 | ACDD contracts (freeze by hash), TDD evidence, contract gate | `bundlebees/bundlebees_plugin/contract.py`, `bundlebees/bundlebees_plugin/tdd.py`, `bundlebees/bundlebees_plugin/contract_gate.py` |
 | File leases | `bundlebees/bundlebees_plugin/leases.py` |
 | HTTP clients (Orbit adapter, launcher `/v1`) | `bundlebees/bundlebees_plugin/client.py`, `bundlebees/bundlebees_plugin/launcher_adapter.py`, `bundlebees/bundlebees_plugin/adapters.py` |
@@ -23,7 +26,7 @@ Pinned `cb8946e` (plugin.yaml 0.2.0; last tag v0.1.1) · https://github.com/mojo
 | Factory loop (queue → landing bridge → event inbox → scheduler) | `bundlebees/bundlebees_plugin/factory_driver.py`, `bundlebees/bundlebees_plugin/work_scheduler.py`, `bundlebees/bundlebees_plugin/queue.py`, `bundlebees/bundlebees_plugin/landing_bridge.py`, `bundlebees/bundlebees_plugin/event_consumer.py`, scout `bundlebees/bundlebees_plugin/scout_hook.py` |
 | Board sync to Hermes kanban | `bundlebees/bundlebees_plugin/board_sync.py`, `bundlebees/bundlebees_plugin/board_dispatch.py` |
 | Recovery, research-before-retry, RETURN | `bundlebees/bundlebees_plugin/recovery.py`, `bundlebees/bundlebees_plugin/research_gate.py`, `bundlebees/bundlebees_plugin/return_report.py` |
-| Action queue + fencing, owner decisions | `bundlebees/bundlebees_plugin/coordinator_actions.py`, `bundlebees/bundlebees_plugin/owners.py`, Hive docket `bundlebees/bundlebees_plugin/hive_docket.py` |
+| Action queue + fencing, owner decisions | `bundlebees/bundlebees_plugin/coordinator_actions.py`, `bundlebees/bundlebees_plugin/owners.py`, Hive docket (parked, unwired) `bundlebees/contrib/unwired/hive_docket.py` |
 | Scrubbing, child env, URL guards, path confinement | `bundlebees/bundlebees_plugin/security.py` |
 | Rails ledger runtime (source of truth; vendored elsewhere) | `bundlebees/contrib/rizzstack_rails` with `vendor-manifest.json`; Rails sources/actions `bundlebees/bundlebees_plugin/rails_actions.py`, `bundlebees/bundlebees_plugin/rails_remote_source.py` |
 | Desktop pane, dashboard API, operator skill | `bundlebees/desktop/plugin.js`, `bundlebees/dashboard/plugin_api.py`, `bundlebees/skills/bundlebees-operator` |
@@ -40,7 +43,7 @@ Pinned `cb8946e` (plugin.yaml 0.2.0; last tag v0.1.1) · https://github.com/mojo
 ## Change recipes
 
 - **Add a tool:** handler + schema in `bundlebees/bundlebees_plugin/tools.py`, register in `bundlebees/__init__.py`, list it under `provides_tools` in `bundlebees/plugin.yaml`, re-measure with `bundlebees/scripts/measure_schemas.py`, tests in `bundlebees/tests`.
-- **Change the risk floor or policy:** `bundlebees/bundlebees_plugin/risk.py` (path patterns), `bundlebees/bundlebees_plugin/risk_policy.py` (phases, reviewer, min verifications). Tiers only go up; unknown fails closed to high.
+- **Change the risk floor or policy:** `bundlebees/bundlebees_plugin/risk.py` (path patterns), `bundlebees/bundlebees_plugin/policy/risk-floor.json` (floor data; the unwired process table is `bundlebees/contrib/unwired/risk_policy.py`). Tiers only go up; unknown fails closed to high.
 - **Support a new worker backend:** implement the adapter contract in `bundlebees/docs/ADAPTERS.md` (`bundlebees/bundlebees_plugin/adapters.py`); don't teach the coordinator the backend's internals.
 - **Change the Rails runtime:** edit `bundlebees/contrib/rizzstack_rails`, regenerate its manifest, then re-vendor with `hyvv/scripts/vendor_rails.py` and orbitdesktop's vendor check (`orbitdesktop/tests/test_rails_vendor.py`).
 
