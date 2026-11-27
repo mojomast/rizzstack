@@ -7,8 +7,16 @@ in a trusted set the caller reads from the frozen owner pin, so an implementer-a
 refused.  ``scripts/preauth.py`` verifies an envelope and decides one use of it from measured
 facts only; every doubt is a named refusal, including missing state (fail closed).
 
-Every ``check()`` call in this file runs with process creation recorded: the only program the
-checker may start is ``ssh-keygen -Y verify`` with a bounded timeout, never ``-Y sign``.
+Production code calls ``check()``, which reads ``policy/allowed_signers`` from the checkout the
+module itself lives in (the base checkout) and pins it to the module constant
+``OWNER_FINGERPRINTS``; it takes no trust-root override.  The decision tests below drive the
+clearly test-only ``check_for_tests()``, which accepts a temporary trust root and pin; the module
+never calls it, and ``preauth-wiring`` must call ``check()`` only.
+
+Every checker call in this file runs with process creation recorded: the only program the
+checker may start is ``ssh-keygen -Y verify`` with a bounded timeout, never ``-Y sign``.  A
+static AST rule (``process_violations``) additionally pins the one process call to a literal
+``ssh-keygen -Y verify`` argv, so dead or unexercised code cannot sign either.
 
 Wiring the checker into the gate/lane is the separate named slice ``preauth-wiring``.
 
@@ -23,6 +31,7 @@ import ast
 import base64
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -38,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "scripts" / "preauth.py"
 SIGNERS = ROOT / "policy" / "allowed_signers"
 SCHEMA = ROOT / "schemas" / "preauth.schema.json"
+PROCESS_FIXTURES = ROOT / "tests" / "fixtures" / "preauth"
 
 #: The frozen trust root.  Changing policy/allowed_signers needs a new owner-approved contract.
 ALLOWED_SIGNERS_SHA256 = "be7d243277ad0073c9d03dc09355f1b769824cde7c2ed0b662c0c190d19973ee"
@@ -230,7 +240,7 @@ class EnvelopeCase(unittest.TestCase):
                                                         sort_keys=True).encode("utf-8")
         signature = signature if signature is not None else self.keys.sign(data)
         with ProcessRecorder(self, fail) as self.recorder:
-            return self.pre.check(
+            return self.pre.check_for_tests(
                 data, signature, allowed_signers=str(signers or self.keys.signers),
                 trusted_fingerprints=frozenset(trusted if trusted is not None else {self.keys.fingerprint}),
                 repo=repo, base_rev=base, contract_sha256=contract, tier=tier, now=now,
@@ -588,6 +598,251 @@ class KeyCustodyTest(unittest.TestCase):
         self.assertEqual(set(schema["required"]), set(pre.REQUIRED_FIELDS))
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(set(schema["properties"]["action_class"]["enum"]), ALLOWED_ACTIONS)
+
+
+# --------------------------------------------------------------- production entry point
+PRODUCTION_PARAMETERS = ("data", "signature", "repo", "base_rev", "contract_sha256", "tier", "now", "facts",
+                         "is_ancestor")
+OVERRIDE_PARAMETERS = {"allowed_signers", "trusted_fingerprints", "signers", "fingerprints", "trust_root",
+                       "signers_path", "root", "base_dir"}
+
+
+def _load_copy(tree, name):
+    spec = importlib.util.spec_from_file_location(name, tree / "scripts" / "preauth.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ProductionEntryPointTest(unittest.TestCase):
+    """check() reads the base checkout's trust root and the module pin; nothing overrides them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pre = load_module()
+        cls.keys = Keys()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.keys.close()
+
+    def call(self, module, **overrides):
+        data = json.dumps(envelope(), sort_keys=True).encode("utf-8")
+        kwargs = dict(repo=REPO, base_rev=CURRENT_BASE, contract_sha256=CONTRACT, tier="T3", now=NOW,
+                      facts=facts(), is_ancestor=lambda older, newer: older == SIGNED_BASE)
+        kwargs.update(overrides)
+        signature = self.keys.sign(data)
+        with ProcessRecorder(self):
+            return module.check(data, signature, **kwargs)
+
+    def tree(self, signer_lines):
+        root = Path(tempfile.mkdtemp(prefix="preauth-tree-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "scripts").mkdir()
+        (root / "policy").mkdir()
+        shutil.copyfile(MODULE, root / "scripts" / "preauth.py")
+        (root / "policy" / "allowed_signers").write_text("".join(l + "\n" for l in signer_lines))
+        return root
+
+    def test_owner_fingerprints_constant_is_frozen_and_equals_the_test_pin(self):
+        pin = self.pre.OWNER_FINGERPRINTS
+        self.assertIsInstance(pin, tuple)
+        self.assertEqual(len(pin), len(set(pin)))
+        self.assertEqual(frozenset(pin), OWNER_FINGERPRINTS)
+        for value in pin:
+            self.assertRegex(value, r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+    def test_check_takes_no_trust_root_override(self):
+        params = inspect.signature(self.pre.check).parameters
+        self.assertEqual(tuple(params), PRODUCTION_PARAMETERS)
+        for param in params.values():
+            self.assertNotIn(param.kind, (param.VAR_POSITIONAL, param.VAR_KEYWORD), param)
+        with self.assertRaises(TypeError):
+            self.call(self.pre, allowed_signers=str(self.keys.signers))
+        with self.assertRaises(TypeError):
+            self.call(self.pre, trusted_fingerprints=frozenset({self.keys.fingerprint}))
+
+    def test_the_committed_trust_root_refuses_every_envelope(self):
+        with self.assertRaises(self.pre.PreauthRefused) as caught:
+            self.call(self.pre)
+        self.assertEqual(caught.exception.reason, "envelope_signer_untrusted")
+
+    def test_check_reads_the_base_checkout_trust_root_and_the_module_pin(self):
+        root = self.tree([self.keys.line])
+        copy = _load_copy(root, "preauth_tree_copy")
+        with self.assertRaises(copy.PreauthRefused) as caught:
+            self.call(copy)
+        self.assertEqual(caught.exception.reason, "envelope_signer_untrusted", "empty module pin")
+        with mock.patch.object(copy, "OWNER_FINGERPRINTS", (self.keys.fingerprint,)):
+            self.assertTrue(self.call(copy)["ok"])
+
+    def test_cwd_and_environment_do_not_redirect_the_trust_root(self):
+        root = self.tree(["# empty"])
+        decoy = self.tree([self.keys.line])
+        copy = _load_copy(root, "preauth_tree_decoy")
+        env = {name: str(decoy / "policy" / "allowed_signers") for name in (
+            "PREAUTH_ALLOWED_SIGNERS", "RIZZSTACK_ALLOWED_SIGNERS", "ALLOWED_SIGNERS")}
+        cwd = os.getcwd()
+        try:
+            os.chdir(decoy)
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(copy, "OWNER_FINGERPRINTS", (self.keys.fingerprint,)):
+                with self.assertRaises(copy.PreauthRefused) as caught:
+                    self.call(copy)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(caught.exception.reason, "envelope_signer_untrusted")
+
+    def test_overrides_live_only_in_the_test_only_entry_point(self):
+        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+        functions = {node.name: node for node in ast.walk(tree)
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        self.assertIn("check_for_tests", functions)
+        self.assertIn("test", (ast.get_docstring(functions["check_for_tests"]) or "").lower())
+        for name, node in functions.items():
+            args = {a.arg for a in node.args.args + node.args.kwonlyargs + node.args.posonlyargs}
+            if args & {"trusted_fingerprints"} and name != "check_for_tests":
+                self.assertTrue(name.startswith("_"), "public %s takes a trust-root override" % name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                self.assertNotEqual(called, "check_for_tests", "the module calls its test-only entry point")
+            if isinstance(node, ast.Name) and node.id == "check_for_tests":
+                self.fail("the module references check_for_tests outside its definition")
+
+
+# --------------------------------------------------------------- static process rule
+SSH_ARGV = ("ssh-keygen", "-Y", "verify", "-f", None, "-I", None, "-n", None, "-s", None)
+SUBPROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output"}
+SUBPROCESS_EXCEPTIONS = {"SubprocessError", "TimeoutExpired", "CalledProcessError"}
+CALL_KEYWORDS = {"input", "capture_output", "timeout", "stdin", "stdout", "stderr", "check"}
+BANNED_MODULES = {"_posixsubprocess", "ctypes", "importlib", "multiprocessing", "pty", "runpy", "cffi",
+                  "pexpect", "sh", "asyncio", "concurrent", "_winapi", "posix", "nt", "builtins", "code",
+                  "pickle", "marshal", "cryptography", "nacl", "paramiko"}
+BANNED_NAMES = {"__import__", "eval", "exec", "compile", "getattr", "setattr", "globals", "locals", "vars",
+                "__builtins__", "breakpoint", "__loader__", "__spec__"}
+BANNED_ATTRS = {"__dict__", "__globals__", "__builtins__", "__subclasses__", "__code__", "modules"}
+BANNED_OS = re.compile(r"^(system|popen|fork.*|exec.*|spawn.*|posix_spawn.*|startfile|_exit)$")
+
+
+def process_violations(source):
+    """Violations of the one-process rule; [] means the module can only start ssh-keygen -Y verify."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return ["syntax_error:%s" % exc.lineno]
+    out = []
+    allowed_attr_nodes = set()
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in BANNED_MODULES:
+                    out.append("banned_import:" + alias.name)
+                if top == "subprocess" and (alias.asname or alias.name != "subprocess"):
+                    out.append("subprocess_alias")
+                if top == "os" and (alias.asname or alias.name != "os"):
+                    out.append("os_alias")
+        elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0]
+            if node.level == 0 and top in BANNED_MODULES:
+                out.append("banned_import:" + (node.module or ""))
+            if top == "subprocess":
+                out.append("from_subprocess_import")
+            if top == "os":
+                for alias in node.names:
+                    if BANNED_OS.match(alias.name) or alias.name == "*":
+                        out.append("from_os_import:" + alias.name)
+        elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
+            out.append("banned_name:" + node.id)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in BANNED_ATTRS:
+                out.append("banned_attr:" + node.attr)
+            if isinstance(node.value, ast.Name) and node.value.id == "os" and BANNED_OS.match(node.attr):
+                out.append("os_process:" + node.attr)
+            if isinstance(node.value, ast.Name) and node.value.id == "subprocess":
+                if node.attr in SUBPROCESS_EXCEPTIONS:
+                    allowed_attr_nodes.add(id(node.value))
+                elif node.attr in SUBPROCESS_CALLS:
+                    pass
+                else:
+                    out.append("subprocess_attr:" + node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value.strip().lower()
+            if text == "sign" or re.search(r"-y\s*sign", text):
+                out.append("sign_literal")
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                    and func.value.id == "subprocess"):
+                if func.attr not in SUBPROCESS_CALLS:
+                    out.append("subprocess_attr:" + func.attr)
+                calls.append(node)
+                allowed_attr_nodes.add(id(func.value))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "subprocess" and id(node) not in allowed_attr_nodes:
+            out.append("subprocess_reference")
+    if len(calls) != 1:
+        out.append("process_calls:%d" % len(calls))
+    flag_slots = {3}
+    for call in calls:
+        if not call.args or len(call.args) != 1:
+            out.append("argv_args")
+            continue
+        argv = call.args[0]
+        if not isinstance(argv, ast.List) or len(argv.elts) != len(SSH_ARGV):
+            out.append("argv_shape")
+        else:
+            for want, got in zip(SSH_ARGV, argv.elts):
+                if want is None:
+                    if not isinstance(got, ast.Name):
+                        out.append("argv_computed")
+                elif not (isinstance(got, ast.Constant) and got.value == want):
+                    out.append("argv_shape")
+        names = [k.arg for k in call.keywords]
+        if None in names or any(k not in CALL_KEYWORDS for k in names if k):
+            out.append("call_keyword")
+        if "timeout" not in names:
+            out.append("call_timeout_missing")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == "-f":
+            in_slot = any(isinstance(c.args[0], ast.List) and len(c.args[0].elts) > 3
+                          and c.args[0].elts[3] is node for c in calls if c.args)
+            if not in_slot:
+                out.append("f_literal")
+    return sorted(set(out))
+
+
+class ProcessRuleTest(unittest.TestCase):
+    MUST_FAIL = ("split_string_sign", "popen_alias", "import_alias", "os_system", "os_exec", "posixsubprocess",
+                 "ctypes_libc", "importlib_subprocess", "dunder_import", "eval_exec", "joined_argv",
+                 "fstring_argv", "computed_argv", "extra_args", "executable_kw", "shell_true",
+                 "getattr_popen", "sys_modules", "asyncio_subprocess", "sign_literal", "two_calls",
+                 "no_timeout")
+
+    def test_safe_verify_stub_passes_the_rule(self):
+        source = (PROCESS_FIXTURES / "safe_verify.py").read_text(encoding="utf-8")
+        self.assertEqual(process_violations(source), [])
+
+    def test_must_fail_stubs_are_refused(self):
+        found = sorted(p.stem for p in (PROCESS_FIXTURES / "must_fail").glob("*.py"))
+        self.assertEqual(found, sorted(self.MUST_FAIL))
+        for name in self.MUST_FAIL:
+            source = (PROCESS_FIXTURES / "must_fail" / (name + ".py")).read_text(encoding="utf-8")
+            self.assertNotEqual(process_violations(source), [], name)
+
+    def test_grokchat_split_string_and_popen_alias_stubs_are_refused(self):
+        split = (PROCESS_FIXTURES / "must_fail" / "split_string_sign.py").read_text(encoding="utf-8")
+        self.assertIn('"si" + "gn"', split)
+        self.assertIn("process_calls:2", process_violations(split))
+        alias = (PROCESS_FIXTURES / "must_fail" / "popen_alias.py").read_text(encoding="utf-8")
+        self.assertIn("from_subprocess_import", process_violations(alias))
+
+    def test_preauth_module_obeys_the_rule(self):
+        self.assertTrue(MODULE.is_file(), "missing scripts/preauth.py")
+        self.assertEqual(process_violations(MODULE.read_text(encoding="utf-8")), [])
 
 
 if __name__ == "__main__":
