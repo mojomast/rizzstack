@@ -12,8 +12,11 @@ entry point.  It:
   ``tests/test_gate_drill.py`` fails if a label in the script has no case here;
 * adds the risk-tier cases, including both ``pyproject.toml`` inline-table
   shapes (``[tool]`` with an inline ``pytest = {...}``, and a document that is
-  one inline table with no header), the dotted-key shape, and the controls that
-  must stay T1 (a new test file, ordinary metadata, a build-system bump);
+  one inline table with no header), the dotted-key shape, the paths a deny list
+  missed (the oracle/sandbox/lease modules, dependency manifests, agent
+  instruction files, runner-shadowing modules, the oracle pytest config), and
+  the controls that must stay T1 under the per-repository allowlist (product
+  source, documentation, a new test file);
 * runs every case against the gate and verifies ``gate_drill.lock.json``.
 
 **The lock is the rule "every new bypass becomes a case before the fix".**  Each
@@ -289,7 +292,17 @@ class Case:
     not a silent edit.
     """
 
-    def __init__(self, cid, what, kind, inputs, expect_exit, expect_class=None, expect_tier=None):
+    def __init__(
+        self,
+        cid,
+        what,
+        kind,
+        inputs,
+        expect_exit,
+        expect_class=None,
+        expect_tier=None,
+        expect_reason=None,
+    ):
         self.cid = cid
         self.what = what
         self.kind = kind
@@ -297,6 +310,10 @@ class Case:
         self.expect_exit = expect_exit
         self.expect_class = expect_class
         self.expect_tier = expect_tier
+        #: A literal the gate's ``lease-tamper: tier:`` line must carry, so a
+        #: case is green only when the tier came from the reason it names and not
+        #: from an unrelated rule that happens to fire on the same path.
+        self.expect_reason = expect_reason
 
     def declaration(self):
         return {
@@ -307,6 +324,7 @@ class Case:
             "expect_exit": self.expect_exit,
             "expect_class": self.expect_class,
             "expect_tier": self.expect_tier,
+            "expect_reason": self.expect_reason,
         }
 
     def digest(self):
@@ -320,16 +338,18 @@ class Case:
             "expect_exit": self.expect_exit,
             "expect_class": self.expect_class,
             "expect_tier": self.expect_tier,
+            "expect_reason": self.expect_reason,
             "digest": self.digest(),
         }
 
 
-def v1(index):
-    return {"index": index}
+def v1(index, repo="rizzstack"):
+    return {"index": index, "repo": repo}
 
 
-def v2(branch, changes=None, appends=None, deletes=None, args=None):
+def v2(branch, changes=None, appends=None, deletes=None, args=None, repo="rizzstack"):
     return {
+        "repo": repo,
         "branch": branch,
         "changes": changes or {},
         "appends": appends or {},
@@ -338,8 +358,9 @@ def v2(branch, changes=None, appends=None, deletes=None, args=None):
     }
 
 
-def tier(assigned, changes=None, test_files=None, appends=None, deletes=None):
+def tier(assigned, changes=None, test_files=None, appends=None, deletes=None, repo="rizzstack"):
     return {
+        "repo": repo,
         "assigned": list(assigned),
         "changes": changes or {},
         "appends": appends or {},
@@ -621,12 +642,12 @@ CASES = (
     ),
     Case(
         "tier-build-system",
-        "risk tier: a build-system bump that ships no schema is T1",
+        "risk tier: a build-system bump in pyproject.toml is T3 (not allowlisted)",
         "tier",
         tier(["pyproject.toml"], {"pyproject.toml": '[build-system]\nrequires = ["hatchling>=1"]\n'}),
         0,
         "slice",
-        "T1",
+        "T3",
     ),
     Case(
         "tier-invalid-toml",
@@ -672,6 +693,171 @@ CASES = (
         1,
         "non-slice",
         "T3",
+    ),
+    # The T1 allowlist's negative controls: one case per path a deny list missed.
+    # Each is a leased slice changing a single file, so only the tier decides.
+    Case(
+        "tier-docs-only",
+        "risk tier: a documentation-only change is T1 (allowlisted)",
+        "tier",
+        tier(["docs/guide.md"], {"docs/guide.md": "# guide\n"}),
+        0,
+        "slice",
+        "T1",
+    ),
+    Case(
+        "tier-oracle-lock",
+        "risk tier: bundlebees_plugin/oracle_lock.py is T3 (not allowlisted)",
+        "tier",
+        tier(
+            ["bundlebees_plugin/oracle_lock.py"],
+            {"bundlebees_plugin/oracle_lock.py": "VALUE = 1\n"},
+            repo="bundlebees",
+        ),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:bundlebees_plugin/oracle_lock.py",
+    ),
+    Case(
+        "tier-sandbox",
+        "risk tier: bundlebees_plugin/sandbox.py is T3 (not allowlisted)",
+        "tier",
+        tier(
+            ["bundlebees_plugin/sandbox.py"],
+            {"bundlebees_plugin/sandbox.py": "VALUE = 1\n"},
+            repo="bundlebees",
+        ),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:bundlebees_plugin/sandbox.py",
+    ),
+    Case(
+        "tier-leases-module",
+        "risk tier: bundlebees_plugin/leases.py is T3 (not allowlisted)",
+        "tier",
+        tier(
+            ["bundlebees_plugin/leases.py"],
+            {"bundlebees_plugin/leases.py": "VALUE = 1\n"},
+            repo="bundlebees",
+        ),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:bundlebees_plugin/leases.py",
+    ),
+    Case(
+        "tier-uv-lock",
+        "risk tier: uv.lock is T3 (not allowlisted)",
+        "tier",
+        tier(["uv.lock"], {"uv.lock": "version = 1\n"}, repo="hyvv"),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:uv.lock",
+    ),
+    Case(
+        "tier-requirements",
+        "risk tier: requirements-dev.txt is T3 (not allowlisted)",
+        "tier",
+        tier(
+            ["requirements-dev.txt"],
+            {"requirements-dev.txt": "pytest==8.0.0\n"},
+            repo="bundlebees",
+        ),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:requirements-dev.txt",
+    ),
+    Case(
+        "tier-package-json",
+        "risk tier: package.json is T3 (not allowlisted)",
+        "tier",
+        tier(["package.json"], {"package.json": '{"name": "drill"}\n'}, repo="orbitdesktop"),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:package.json",
+    ),
+    Case(
+        "tier-agents-md",
+        "risk tier: AGENTS.md is T3 (an agent instruction, not documentation)",
+        "tier",
+        tier(["AGENTS.md"], {"AGENTS.md": "# agents\n"}, repo="orbitdesktop"),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:AGENTS.md",
+    ),
+    Case(
+        "tier-claude-md",
+        "risk tier: CLAUDE.md is T3 (an agent instruction, not documentation)",
+        "tier",
+        tier(["CLAUDE.md"], {"CLAUDE.md": "# agents\n"}),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:CLAUDE.md",
+    ),
+    Case(
+        "tier-root-pytest-module",
+        "risk tier: a root pytest.py is T3 (runner shadowing)",
+        "tier",
+        tier(["pytest.py"], {"pytest.py": "VALUE = 1\n"}),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:pytest.py",
+    ),
+    Case(
+        "tier-pytest-package",
+        "risk tier: a root _pytest/ package is T3 (runner shadowing)",
+        "tier",
+        tier(["_pytest/__init__.py"], {"_pytest/__init__.py": "VALUE = 1\n"}),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:_pytest/__init__.py",
+    ),
+    Case(
+        "tier-pluggy-module",
+        "risk tier: a root pluggy.py is T3 (runner shadowing)",
+        "tier",
+        tier(["pluggy.py"], {"pluggy.py": "VALUE = 1\n"}),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:pluggy.py",
+    ),
+    Case(
+        "tier-oracle-pytest-ini",
+        "risk tier: .bundlebees-oracle-pytest.ini is T3 (not allowlisted)",
+        "tier",
+        tier(
+            [".bundlebees-oracle-pytest.ini"],
+            {".bundlebees-oracle-pytest.ini": "[pytest]\naddopts = -q\n"},
+            repo="bundlebees",
+        ),
+        0,
+        "slice",
+        "T3",
+        "not_t1_allowlisted:.bundlebees-oracle-pytest.ini",
+    ),
+    Case(
+        "tier-unknown-repo",
+        "risk tier: a repository with no allowlist entry is T3 (repo_unknown)",
+        "tier",
+        tier(
+            ["docs/guide.md"],
+            {"docs/guide.md": "# guide\n"},
+            repo="not-a-known-repository",
+        ),
+        0,
+        "slice",
+        "T3",
+        "repo_unknown:not-a-known-repository",
     ),
 )
 
@@ -749,6 +935,12 @@ def run_case(script, case, root):
         for key, value in os.environ.items()
         if key not in ("GITHUB_REPOSITORY", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_EVENT_PATH")
     }
+    # The tier allowlist is keyed by the repository under test.  Actions hands the
+    # gate GITHUB_REPOSITORY; a case declares which repository it imitates, and
+    # a case that declares none is the unknown-repository control.
+    repo_name = (case.inputs or {}).get("repo")
+    if repo_name:
+        env["GITHUB_REPOSITORY"] = "mojomast/%s" % repo_name
     proc = subprocess.run(command, capture_output=True, text=True, env=env)
     output = (proc.stdout or "") + (proc.stderr or "")
     pull_class, tier = class_and_tier(proc.stdout)
@@ -759,6 +951,15 @@ def run_case(script, case, root):
         problems.append("class %r, expected %r" % (pull_class, case.expect_class))
     if case.expect_tier and tier != case.expect_tier:
         problems.append("tier %r, expected %r" % (tier, case.expect_tier))
+    if case.expect_reason:
+        tier_line = next(
+            (line for line in (proc.stdout or "").splitlines() if "tier: T3 because" in line),
+            "",
+        )
+        if case.expect_reason not in tier_line:
+            problems.append(
+                "tier reason %r missing from %r" % (case.expect_reason, tier_line.strip())
+            )
     return {
         "case": case.cid,
         "what": case.what,
@@ -821,7 +1022,7 @@ def verify_lock(path):
                 "corpus change must be reviewed and re-locked with --update-lock"
                 % (cid, want["digest"][:12], str(have.get("digest"))[:12])
             )
-        for key in ("expect_exit", "expect_class", "expect_tier"):
+        for key in ("expect_exit", "expect_class", "expect_tier", "expect_reason"):
             if want[key] != have.get(key):
                 problems.append(
                     "case %s expectation drift: %s is %r, the lock says %r"

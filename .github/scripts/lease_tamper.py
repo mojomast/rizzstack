@@ -74,13 +74,25 @@ accept exactly what this gate accepts.  The gate prints a machine-readable
 line on its last line so the lane takes the class and the risk tier from the
 trusted gate output instead of deriving them from a branch name.
 
-**Risk tier (T1/T3).**  After resolving the base and the head the gate reads the
-pull request's changed paths from ``<merge-base(base, head)>...<head>`` and
-classifies the change as **T3** (touches machinery or test infrastructure) or
-**T1** (everything else).  T3 is the fail-closed tier: a change the step cannot
-read is T3.
+**Risk tier (T1/T3).**  The tier is decided by a POSITIVE per-repository
+allowlist.  After resolving the base and the head the gate reads the pull
+request's changed paths from ``<merge-base(base, head)>...<head>``; the change is
+**T1** only when EVERY changed path matches the allowlist of the repository
+under test, and every other path is **T3** with the ``not_t1_allowlisted``
+reason.  The allowlist names product source directories, documentation and new
+test files only (``TIER_T1_COMMON`` plus ``TIER_T1_ALLOWLIST[<repo>]``), and it
+is positive on purpose: a deny list only refuses the shapes somebody thought of
+-- a lockfile, an agent instruction file, a module that shadows the test runner
+-- while every path nobody listed would auto-merge unreviewed.  The cost of a
+wrong T3 is one owner review; the cost of a wrong T1 is an unreviewed merge.  The
+repository identity comes from ``GITHUB_REPOSITORY``, then the ``origin`` remote,
+then the checkout's directory name -- never from anything a pull request can
+change, so a change cannot choose its own allowlist.  A repository with no entry
+in the allowlist is T3 for every change (``repo_unknown``): an allowlist is
+granted by a reviewed policy change, not by adding a repository.
 
-T3 paths and changes:
+The T3 path and change rules below stay, and are reported beside
+``not_t1_allowlisted``: any one of them still makes the change T3 on its own.
 
 * ``.github/**`` -- workflows and CI scripts;
 * gate/lane scripts -- the shared ``sensitive_paths()`` list (``gate/``,
@@ -91,9 +103,9 @@ T3 paths and changes:
   ``contract/``/``contracts/`` directory (a frozen contract is approval
   machinery wherever it lives) or ``*.contract.json`` document;
 * any ``conftest.py`` anywhere;
-* **edits to existing tests** -- a modified, deleted or renamed test file.  A
-  newly added test file is T1: new coverage is not a change to the tests that
-  already judge the change;
+* **edits to existing tests** -- a modified, deleted or renamed test file.  Only
+  an ADDED test file is allowlisted (``tests/**`` with status ``A``): new
+  coverage is not a change to the tests that already judge the change;
 * pytest and coverage configuration -- ``pytest.ini``, ``tox.ini``,
   ``noxfile.py``, ``.coveragerc``/``coverage.ini``, and the ``[tool.pytest*]``
   / ``[tool.coverage*]`` tables of ``pyproject.toml``, judged by parsing the
@@ -2004,6 +2016,74 @@ TIER_PACKAGING_TABLES = (
     ("tool", "scikit-build"),
 )
 
+#: What a T1 allowlist entry may cover: ``any`` status, or only an ADDED file.
+TIER_ALLOW_ANY = "any"
+TIER_ALLOW_NEW = "new"
+
+
+def _allow(pattern, kind=TIER_ALLOW_ANY):
+    """One allowlist entry: a path glob and the statuses it is allowlisted for."""
+    return (pattern, kind)
+
+
+#: The T1 allowlist every repository shares: documentation, the conventional
+#: product source directories, and NEW test files.  Nothing here is a manifest, a
+#: configuration file, an agent instruction, or a module the test runner imports
+#: by name -- those live outside every allowlist on purpose.
+TIER_T1_COMMON = (
+    _allow("docs/**"),
+    _allow("README.md"),
+    _allow("CHANGELOG.md"),
+    _allow("src/**"),
+    _allow("lib/**"),
+    _allow("tests/**", TIER_ALLOW_NEW),
+)
+
+#: Each repository's own product surfaces, keyed by the last segment of
+#: ``owner/name``.  A repository with no entry here is T3 for every change
+#: (``repo_unknown``): the tier has to fail toward T3, because T1 auto-merges.
+#:
+#: Every entry is a surface that cannot change what the factory believes: a
+#: brief (``plans/``), a profile, a template, an acceptance harness, an approval
+#: extension and every manifest are deliberately absent, because a change there
+#: decides what a bee builds or what the owner is told.
+#:
+#: ``bundlebees`` deliberately does not allowlist ``bundlebees_plugin/``: that
+#: package holds the dispatch, the verify sandbox, the lease store and the oracle
+#: lock, so every module in it is review material.  That omission is where
+#: ``sandbox.py``, ``leases.py`` and ``oracle_lock.py`` get their T3 -- not a
+#: name list, which would only cover the files somebody remembered.
+TIER_T1_ALLOWLIST = {
+    "rizzstack": (
+        _allow("codemap/**"),
+        _allow("compat/**"),
+        _allow("scripts/codemap/**"),
+        _allow("NEWS.md"),
+        _allow("NEXT.md"),
+    ),
+    "workflow": (
+        _allow("apps/**"),
+        _allow("examples/**"),
+        _allow("reference/**"),
+        _allow("specs/**"),
+        _allow("ROADMAP.md"),
+    ),
+    "bundlebees": (
+        _allow("dashboard/**"),
+        _allow("desktop/**"),
+    ),
+    "hyvv": (
+        _allow("hyvv/**"),
+        _allow("ROADMAP.md"),
+    ),
+    "orbitdesktop": (
+        _allow("apps/**"),
+        _allow("packages/**"),
+        _allow("public/**"),
+        _allow("index.html"),
+    ),
+}
+
 
 def _tier_normalise(path):
     normal = posixpath.normpath(str(path or "").replace("\\", "/").strip())
@@ -2014,6 +2094,49 @@ def _tier_normalise(path):
 
 def _tier_basename(path):
     return _tier_normalise(path).rsplit("/", 1)[-1]
+
+
+def _tier_repo_name(repo, environ=None):
+    """The repository name the T1 allowlist is keyed by (``owner/name``'s name).
+
+    Read in a fixed order: ``GITHUB_REPOSITORY`` (what Actions sets for the
+    repository under test), the checkout's ``origin`` remote, then the checkout
+    directory's own name.  None of the three is reachable from a pull request, so
+    a change cannot pick its own allowlist.  An empty result is an unknown
+    repository, which the tier treats as T3.
+    """
+    env = os.environ if environ is None else environ
+    slug = str(env.get("GITHUB_REPOSITORY") or "").strip()
+    if slug:
+        return slug.strip("/").rsplit("/", 1)[-1].lower()
+    proc = _run(repo, "remote", "get-url", "origin", check=False)
+    url = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    if url:
+        name = url.rstrip("/").rsplit("/", 1)[-1]
+        if name.endswith(".git"):
+            name = name[: -len(".git")]
+        if name:
+            return name.lower()
+    return _tier_normalise(repo).rstrip("/").rsplit("/", 1)[-1].lower()
+
+
+def _tier_allowlist(repo_name):
+    """Every allowlist entry the repository resolves to, or ``None`` if unknown."""
+    name = str(repo_name or "").strip().lower()
+    if name not in TIER_T1_ALLOWLIST:
+        return None
+    return TIER_T1_COMMON + TIER_T1_ALLOWLIST[name]
+
+
+def _tier_allowlisted(path, status, allowlist):
+    """True when one changed path matches an allowlist entry for its status."""
+    normal = _tier_normalise(path).lower()
+    for pattern, kind in allowlist or ():
+        if kind == TIER_ALLOW_NEW and str(status or "").upper() != "A":
+            continue
+        if fnmatch.fnmatchcase(normal, pattern.lower()):
+            return True
+    return False
 
 
 def _tier_is_test_path(path):
@@ -2295,13 +2418,17 @@ def _tier_added_lines(repo, merge_base, head):
             yield path, line[1:]
 
 
-def risk_tier(repo, base, head):
+def risk_tier(repo, base, head, repo_name=None, environ=None):
     """``(tier, [(reason, path), ...])`` for the change between base and head.
 
-    Reads the changed paths of ``<merge-base>...<head>`` (three-dot: only what
-    the change introduces) plus the added lines of scanned files.  Any reason
-    makes the change T3; no reason makes it T1.  The step fails closed: a
-    history it cannot read is T3 with the ``tier_unreadable`` reason.
+    The tier is decided by the repository's POSITIVE T1 allowlist: the change is
+    T1 only when EVERY changed path matches it and no T3 reason applies.  Each
+    path outside the allowlist adds the ``not_t1_allowlisted`` reason, and the
+    path/change rules of ``_tier_path_reasons`` stay as reasons of their own, so
+    the rendered line names both the class of the change and the fact that it is
+    outside the repository's product surface.  The step fails closed: a history
+    it cannot read is T3 ``tier_unreadable``, and a repository it cannot name is
+    T3 ``repo_unknown``.
     """
     try:
         proc = _run(repo, "merge-base", base, head, check=False)
@@ -2313,9 +2440,17 @@ def risk_tier(repo, base, head):
             if item not in reasons:
                 reasons.append(item)
 
+        name = str(repo_name if repo_name is not None else _tier_repo_name(repo, environ))
+        name = name.strip().lower()
+        allowlist = _tier_allowlist(name)
+        if allowlist is None:
+            add("repo_unknown", name)
+            allowlist = ()
         for status, path in _tier_diff(repo, merge_base, head):
             for reason in _tier_path_reasons(repo, merge_base, head, status, path):
                 add(reason, path)
+            if not _tier_allowlisted(path, status, allowlist):
+                add("not_t1_allowlisted", path)
         for path, content in _tier_added_lines(repo, merge_base, head):
             if not _tier_is_scanned(path):
                 continue
@@ -2415,11 +2550,14 @@ def main(argv=None, environ=None):
                 % target.head
             )
 
-        # The risk tier is read from the changed paths alone: it must not depend
-        # on the lease, the review or the event, or a pull request could change
-        # its own tier.  A tier the step cannot read is T3 (fail closed) and
-        # never fails the run by itself.
-        tier, tier_reasons = risk_tier(args.repo, target.base, target.head)
+        # The risk tier is read from the changed paths and the repository's own
+        # allowlist: it must not depend on the lease, the review or the event, or
+        # a pull request could change its own tier.  The repository identity comes
+        # from the environment/remote, never from the pull request.  A tier the
+        # step cannot read is T3 (fail closed) and never fails the run by itself.
+        tier, tier_reasons = risk_tier(
+            args.repo, target.base, target.head, environ=environ
+        )
         note = render_tier_reasons(tier, tier_reasons)
         if note and not args.quiet:
             print(note)

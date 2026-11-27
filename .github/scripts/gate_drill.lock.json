@@ -1,289 +1,451 @@
 {
   "cases": {
-    "tier-build-system": {
-      "digest": "64ad07b8f5ca941ac1b2f2c8692e5146b6e2ad1fd9c3462574658f1866f7aaf7",
+    "tier-agents-md": {
+      "digest": "c1c54b6887e79b924b31e898c24dbdb5d83cfeabf73e34e11252e41719dce173",
       "expect_class": "slice",
       "expect_exit": 0,
-      "expect_tier": "T1",
+      "expect_reason": "not_t1_allowlisted:AGENTS.md",
+      "expect_tier": "T3",
       "kind": "tier",
-      "what": "risk tier: a build-system bump that ships no schema is T1"
+      "what": "risk tier: AGENTS.md is T3 (an agent instruction, not documentation)"
+    },
+    "tier-build-system": {
+      "digest": "93c004d858cf23fe38eb1590d4b68b6f758304f8ee35ff4a8518ea3046d34cae",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": null,
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a build-system bump in pyproject.toml is T3 (not allowlisted)"
+    },
+    "tier-claude-md": {
+      "digest": "a5a4a5c93b300949e8a5e698e2edd829edc164e3f6883edd5c051b5cbc332d57",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:CLAUDE.md",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: CLAUDE.md is T3 (an agent instruction, not documentation)"
     },
     "tier-conftest": {
-      "digest": "387b7d95545e8ac3ebda36a8810261fcaf71c4e2a27159de5b722f5e3e0a18f0",
+      "digest": "a5137f6d30bae3ed6cf48ee1bbe342f3a075befb714d5b6f2ce2df22127a47cb",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: any conftest.py is T3"
     },
     "tier-coverage": {
-      "digest": "224fab5f80407fabc97c73aa78dfb49e5977d331f9a38069fc4db03f88b52e79",
+      "digest": "a6f2d8b8a66486f651c69514a2af8069580ff1a6c691e78085426e5a4d69aa8b",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a [tool.coverage] table change is T3"
     },
     "tier-deploy": {
-      "digest": "1f0cf51a3a33e030690ba13a41de592a2eb92b23581e1aec23c0263b68c0afa1",
+      "digest": "d3cc0dba070ec0fac588cedcc4aa13d9438c1f1d3b55a014dfdf2d3b31e90c73",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a deploy unit is T3"
     },
-    "tier-dotted-keys": {
-      "digest": "08915840e610103fa304812c1f2f8f5883af0da8ae4a5975e2cb4cc141400254",
+    "tier-docs-only": {
+      "digest": "a933368b4c49d982992a7b38981bd09506aab1622310e028a356cf3bc57f4fee",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
+      "expect_tier": "T1",
+      "kind": "tier",
+      "what": "risk tier: a documentation-only change is T1 (allowlisted)"
+    },
+    "tier-dotted-keys": {
+      "digest": "bbd42620dd762bfd580c47b7a211edf61dd3f7cb6ca0e2597bd6cf46eb67aac1",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: dotted keys hiding pytest config are T3"
     },
     "tier-entry-points": {
-      "digest": "1d001e38b8a249503304d3275edc68ed87b81f8fc39269d48677a01766e91954",
+      "digest": "6ac749d086888658713d275c148da29405177f376fb4ca1b5b1a4728d72423ab",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a pytest11 entry point is T3"
     },
     "tier-existing-test": {
-      "digest": "a0ff3c5e19f5dbc2a5ddb6f0b6f93548aa8c96b050141d59ff7543bb4707df38",
+      "digest": "db4184aad49be0f1355677a9299057660f547bed3d8fcef6e8ae4b5745afe2d4",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: an edit to an EXISTING test file is T3"
     },
     "tier-github": {
-      "digest": "58b7ddab46b4a651705bf028553a10c11d3f2b2d6f455eb31f883a79144555e2",
+      "digest": "9557b065f7afe3e06922760948be66432a4ecb996556279dc9d0f043231a3ee9",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a workflow change is T3"
     },
     "tier-inline-table-root": {
-      "digest": "2f6ce193ce2433c431372a9aec1b711c80084304e0ddfc625fb76392252cb7cb",
+      "digest": "f6cb12a9ba68bfc87ddea894804d8e755950bd66dbfb0c80e070a23e6fc3ed82",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a fully inline root table hiding pytest config is T3"
     },
     "tier-inline-table-tool": {
-      "digest": "b00ec6547b4e8953afb6bd963438247c5ebcc9501b431f28d156317d0bf98374",
+      "digest": "0f1a069b6f5dac9404c0c6456223091001f23b5a16a32f24d0f6cf65b9b863db",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: an inline pytest table under [tool] is T3"
     },
     "tier-invalid-toml": {
-      "digest": "08421068a81806c21e4b4c68b04bef401cfcabead152e7400e3b32cbda27fa11",
+      "digest": "3848a56fb18157cd22563d05d6ee5bb2256292b7fab56a6334305186a4f1b08e",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: an unparseable pyproject is T3 (fail closed)"
     },
     "tier-lease-store": {
-      "digest": "e306b5e93120091b7135b1b1e4bd2c0913bbd91ae3674ebcb7758c6b9e15d3ad",
+      "digest": "c6fbaf00d8031989afe5bfee0675edd6313744564a392eca00751daef025ff7f",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "risk tier: a lease-store change is T3 and non-slice"
     },
-    "tier-new-test": {
-      "digest": "3259b3497356172a016ae7cbb235acde54a937fc40f25a1a82953ce4f553078f",
+    "tier-leases-module": {
+      "digest": "734d3017d0a1809f1b8d290a055bd542a2aa8b03620eeecd45b7484ac07360b1",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:bundlebees_plugin/leases.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: bundlebees_plugin/leases.py is T3 (not allowlisted)"
+    },
+    "tier-new-test": {
+      "digest": "6ba4623b2771407cc2090857b48a210644e16624be2202eb5bdf7a2faf5831a3",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "tier",
       "what": "risk tier: a NEW test file is T1"
     },
     "tier-non-slice-workflow": {
-      "digest": "c549dbce92fa7c0589ed065e8a6e40ab36724a1b83079ba7e2e78bac6daeb4d4",
+      "digest": "83bcbb1bdc7bde6393cf4b5c92f83faab56795adc90573ad35ec6cc080d10459",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "risk tier: an unleased workflow change is non-slice T3"
     },
-    "tier-packaging-schemas": {
-      "digest": "b40fcf9776b1057849c4a312f7f7175387933b51651c552097aba5129b11ca85",
+    "tier-oracle-lock": {
+      "digest": "ffb8b5dfc81ddff6a6ab3e5d6cf6d3ccbf10e83e6ce1e923abe479b2a01787de",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:bundlebees_plugin/oracle_lock.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: bundlebees_plugin/oracle_lock.py is T3 (not allowlisted)"
+    },
+    "tier-oracle-pytest-ini": {
+      "digest": "27887402d22aa7ad80a7b2142436bc1db01aec84bf9bd5cd48fe737a4320f1bf",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:.bundlebees-oracle-pytest.ini",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: .bundlebees-oracle-pytest.ini is T3 (not allowlisted)"
+    },
+    "tier-package-json": {
+      "digest": "a048fe57351a9432dc0051d34cc7629a2835eae8c063d683bf8da9949f6eeef1",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:package.json",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: package.json is T3 (not allowlisted)"
+    },
+    "tier-packaging-schemas": {
+      "digest": "8a108ea2d4e9c938e203e9c2b35ca6f39fb46cdeddf10124c4f597523c7b59c9",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: packaging that ships runtime schemas is T3"
     },
-    "tier-scanner": {
-      "digest": "ff4e00d891dfdffa2dc5279e04af36e2f840b7063ea14abccae105553a4c8465",
+    "tier-pluggy-module": {
+      "digest": "69f70c6deeff9bc48a6f429f0903cebf1dc979c3ac0086b1a874a6eb7ac0313b",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:pluggy.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a root pluggy.py is T3 (runner shadowing)"
+    },
+    "tier-pytest-package": {
+      "digest": "da20d3cf30c3992ea2130d3acbaaf39b949d4afd64e3e591d7bd153c6bb426bd",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:_pytest/__init__.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a root _pytest/ package is T3 (runner shadowing)"
+    },
+    "tier-requirements": {
+      "digest": "c2d3d858b937e2f0135242a6c8c9c6a7026934525fbc221625cede8789e924bc",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:requirements-dev.txt",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: requirements-dev.txt is T3 (not allowlisted)"
+    },
+    "tier-root-pytest-module": {
+      "digest": "9cd13a6d42522604987c7bd6e8f153eb98a5d5deb601961c99c386c28bb91b4c",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:pytest.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a root pytest.py is T3 (runner shadowing)"
+    },
+    "tier-sandbox": {
+      "digest": "271646bedd6b2d9475448783085fb7939d1a3cd6cf9f489bb6ec1e501c59c50b",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:bundlebees_plugin/sandbox.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: bundlebees_plugin/sandbox.py is T3 (not allowlisted)"
+    },
+    "tier-scanner": {
+      "digest": "e4e5ce639c1bdb8ae10ecbda0c498c980fae1eb981d0abf0fab1ce8753177cdb",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a scanner finding in a NEW test file is T3"
     },
     "tier-src": {
-      "digest": "b9407b641871ca5e17aebd17ee5b4d7dc1ee15b964ac9a53a722d319e8f300ff",
+      "digest": "59142ac28102de37f660f5b8f7aff922bc79b2ff831c12431e6a09fb6401c7cd",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "tier",
       "what": "risk tier: a leased source change is T1"
     },
+    "tier-unknown-repo": {
+      "digest": "04737a87e54b60dd6b01ede9a599ab795b8e0175c37b1d4b42ab4c4ca6226233",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "repo_unknown:not-a-known-repository",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a repository with no allowlist entry is T3 (repo_unknown)"
+    },
+    "tier-uv-lock": {
+      "digest": "ec118cde5f8e12607b0e6e83e7c482be34aa9424ed28d217c47cd89f8e6598c7",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "not_t1_allowlisted:uv.lock",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: uv.lock is T3 (not allowlisted)"
+    },
     "v1-0": {
-      "digest": "bcdc8041ac60803328b43f8143e628e877e1dc178c0cedf702664d16ad68860d",
+      "digest": "77ed9c3e54097b52d8ffed88a80558aaf90a337cede9622d57d01b9debd6326d",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v1",
       "what": "0 body Lease-Verify: <head> moves the verify boundary to the head"
     },
     "v1-1": {
-      "digest": "8cfb2a1f12d8fab0391d7aa9a87d4439a558c4edcf2f89b571b606c9355a070b",
+      "digest": "49fda3a6ee2f12674c82a3f59784b80b2ea9f5689d6a97abc078e166bccffbe3",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v1",
       "what": "1 label lease-verify:<head> moves the verify boundary to the head"
     },
     "v1-2": {
-      "digest": "59b3d33033b74c3d6272fe9ef0e489cbc87acd18fc950d158a5c130cc4804a38",
+      "digest": "c5140df6bf704e8b5e0209ee3182321065f641347845466f8f85bc4284ef8815",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v1",
       "what": "2 the PR adds .rizzstack/lease.json on its own branch and is judged by it"
     },
     "v1-3": {
-      "digest": "db5e51e47d499c4695e66353e0dc85636e1c896b4e0651e4b7843ea70a0044e1",
+      "digest": "68c97a8ec68335ec0b56c8d3de7f788826de68dd6c0135f597a97ca480028d94",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v1",
       "what": "3 a base lease without review or contract_sha256 grants '*'"
     },
     "v1-4": {
-      "digest": "2edb2c0c05c77b6e88d7c71f2684100b02fdcb5ee148b36f04f66f0e83e23c53",
+      "digest": "840cfdcd1a8903e955883e68fafcb6e3ef73ff989f3cd574eb26c90117dc037e",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v1",
       "what": "4 a body Lease-Contract: line selects a broader base lease"
     },
     "v1-control": {
-      "digest": "35203cdfdab2fe122071eb8daff9beed42b6b65f5b8dfde373f9a077148edcd5",
+      "digest": "c40d5e3a66d19e50112b32d246faa0fecc6e27b14f8f0c76c0214192a61ef6c4",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v1",
       "what": "a legitimate slice changes only its leased file (control)"
     },
     "v2-0": {
-      "digest": "eec2a75af765859cb623686ba64a4c3362877d96414727a0907813449cf29b19",
+      "digest": "3f1076501e2d05887a9235e42543ec7ab408d4e5be41303e25c73c14eb7195a1",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "frozen test edited (must fail on scope, not non-slice)"
     },
     "v2-1": {
-      "digest": "9cd89e108548d2b6f3bd3961095b3f4353e7cf35b0b64241d5f015a092cace8d",
+      "digest": "837173abf6b630aee0387b63bb36754d2c58bfe66f1021e607e98f0c8cbe378d",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "frozen test edited + body 'Lease-Verify: <head>'"
     },
     "v2-1b": {
-      "digest": "cc3de0599b9cbb1a762d0bda96c43568bdb362915c7c0fcb44d3eca03d27fbd3",
+      "digest": "f6ae02d3501b7eeb4c306c5257e29d9bb52608037991f2117f3525aec9a95fad",
       "expect_class": "slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "frozen test edited + label 'lease-verify:<head>'"
     },
     "v2-2": {
-      "digest": "3a1e7055e3eef42265265b436d3417dfccd7b080ccf09049dffe82811ce797b5",
+      "digest": "44304f4d78388064e8318811012ee75ef4d348564e670baacfd4d0c5b4b4fbbd",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "PR adds its own .rizzstack/lease.json and edits the gate"
     },
     "v2-3": {
-      "digest": "72225ab0502dabeed08db5f615392a46ded4986675d17e5f59962f9614be9ab1",
+      "digest": "1a72f4ece3df8ba98a425dc9005035fc94a9bee61a39a439642018aee10192b1",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "slice PR sneaks a new lease file"
     },
     "v2-4": {
-      "digest": "b8613dc5c9a4b61a1e5b7ef5eac89de38bca89739a150538e1b1cc806fb962a2",
+      "digest": "af91f8e965e10271707bc852b648e15f4c83cc438dca0bb30b7a91888ff8675e",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "body 'Lease-Contract:' picks the gate lease"
     },
     "v2-4b": {
-      "digest": "ce4da28804bd8b7758e4cd9466254d0e1292cc6bec365396041c445a109ac8f1",
+      "digest": "d23882536d76a2d863f0ad01b9e5ab0a5c7d4eba5863e3e9a846e2abe03e987d",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "label 'lease-contract:' picks the gate lease"
     },
     "v2-4c": {
-      "digest": "a8704627d011a6d34f23a731003dbbf765db972a984266ad5fc7bbbb5e98f08b",
+      "digest": "bd0bc41b3e6dfb0e7a56b310d4a7ca991a2cb505df446789b916545e912f6a24",
       "expect_class": null,
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "branch leaf named 'gate' matches the gate lease id"
     },
     "v2-5": {
-      "digest": "37621d0e79fe59998f1c096df712ef62bbdafb47f2a6e2ec15ed24da56ce7fed",
+      "digest": "881751497ba27e1c197e085a8b0c797b0f3ae89def2d5c9248d0e19c0b5b0855",
       "expect_class": null,
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v2",
       "what": "approved contract with glob scope 'src/*'"
     },
     "v2-6": {
-      "digest": "b512a3c6a8d17ce72e16f59495914fdb39adef81d91b1596e2553a486c892693",
+      "digest": "b1d6bdc5725563180dc6972cceb967f50ae3352ee67ae1cc77cfa2e3b53f2cee",
       "expect_class": "non-slice",
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v2",
       "what": "lease with no review block must not count as frozen"
     },
     "v2-7": {
-      "digest": "74baefb81d7b39b6954089afb6fb05fa884c45aca81f3e5e228346525d78aaf6",
+      "digest": "3768afd27d89008723fdae52ad626449a4a68bee42cf09e26bf5906ca51113b8",
       "expect_class": null,
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T3",
       "kind": "v2",
       "what": "lease wider than its approved contract"
     },
     "v2-8": {
-      "digest": "e7261351e732dc27c799e283269a0065e4860326c588e0add3f59f1e157dc028",
+      "digest": "a8e9dfb1bdf347cd40d32f7a480870f1186ef3f80d3e59d3ffe6f6b105c5fea8",
       "expect_class": null,
       "expect_exit": 1,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v2",
       "what": "contract text changed after approval (hash mismatch)"
     },
     "v2-P": {
-      "digest": "68ce2b11ea2949515c86bea3fe3b7ab5c2ed937c9efdb5cebf2e26bc0968c881",
+      "digest": "532396b7846c324843f03fea564880f831cf0cdd5ba13e8a8590d155281a6b9b",
       "expect_class": "slice",
       "expect_exit": 0,
+      "expect_reason": null,
       "expect_tier": "T1",
       "kind": "v2",
       "what": "positive control: clean in-lease change"

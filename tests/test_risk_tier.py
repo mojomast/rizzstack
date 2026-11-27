@@ -93,10 +93,12 @@ def build_change(root, base_files=None, changes=None, deletes=(), branch="feat/t
 
 
 class TierRules(unittest.TestCase):
-    def tier(self, changes=None, deletes=(), base_files=None):
+    def tier(self, changes=None, deletes=(), base_files=None, repo_name="rizzstack"):
         root = tempfile.mkdtemp(prefix="tier-rules-")
         repo, base, head = build_change(root, base_files, changes, deletes)
-        tier, reasons = GATE.risk_tier(str(repo.path), base, head)
+        tier, reasons = GATE.risk_tier(
+            str(repo.path), base, head, repo_name=repo_name, environ={}
+        )
         return tier, [reason for reason, _path in reasons]
 
     def assert_t1(self, **kwargs):
@@ -118,25 +120,38 @@ class TierRules(unittest.TestCase):
     def test_new_test_file_is_t1(self):
         self.assert_t1(changes={"tests/test_new.py": "def test_new():\n    assert 1\n"})
 
-    def test_ordinary_pyproject_metadata_is_t1(self):
-        self.assert_t1(
+    def test_ordinary_pyproject_metadata_is_t3_manifest(self):
+        # A manifest is not product surface: this metadata is inert, but
+        # pyproject.toml is also the file that decides how the tests run.
+        self.assert_t3(
+            "not_t1_allowlisted",
             changes={
                 "pyproject.toml": '[project]\nname = "slice"\nversion = "1.0.1"\n'
                 'description = "ordinary metadata"\n'
-            }
+            },
         )
 
     def test_build_system_requires_is_not_schema_packaging(self):
-        self.assert_t1(changes={"pyproject.toml": '[build-system]\nrequires = ["hatchling>=1"]\n'})
+        # No packaging_schemas reason -- but a manifest is outside the allowlist.
+        tier, reasons = self.tier(
+            changes={"pyproject.toml": '[build-system]\nrequires = ["hatchling>=1"]\n'}
+        )
+        self.assertEqual(tier, "T3")
+        self.assertIn("not_t1_allowlisted", reasons)
+        self.assertNotIn("packaging_schemas", reasons)
 
-    def test_same_pytest_config_written_differently_is_t1(self):
-        # The parsed table is identical, so a reformat is not a config change.
+    def test_same_pytest_config_written_differently_is_not_a_config_reason(self):
+        # The parsed table is identical, so a reformat is not a config change;
+        # the manifest is still outside the allowlist.
         base = dict(DEFAULT_BASE)
         base["pyproject.toml"] = '[project]\nname = "slice"\n\n[tool.pytest.ini_options]\naddopts = "-q"\n'
-        self.assert_t1(
+        tier, reasons = self.tier(
             base_files=base,
             changes={"pyproject.toml": 'tool = { pytest = { ini_options = { addopts = "-q" } } }\n'},
         )
+        self.assertEqual(tier, "T3")
+        self.assertIn("not_t1_allowlisted", reasons)
+        self.assertNotIn("pytest_config", reasons)
 
     # ---- path classes ----------------------------------------------------
 
@@ -214,6 +229,91 @@ class TierRules(unittest.TestCase):
 
     def test_pth_file_is_t3(self):
         self.assert_t3("pth_file", changes={"slice.pth": "import os\n"})
+
+    # ---- the per-repository T1 allowlist ---------------------------------
+
+    def test_docs_only_change_is_t1(self):
+        self.assert_t1(changes={"docs/guide.md": "# guide\n"})
+
+    def test_one_path_outside_the_allowlist_makes_the_whole_change_t3(self):
+        # EVERY changed path has to match: a docs change does not carry a manifest.
+        self.assert_t3(
+            "not_t1_allowlisted",
+            changes={"docs/guide.md": "# guide\n", "requirements.txt": "-e .\n"},
+        )
+
+    def test_an_unknown_repository_can_only_be_t3(self):
+        tier, reasons = self.tier(
+            repo_name="a-repository-nobody-allowlisted",
+            changes={"docs/readme.md": "# a new doc\n"},
+        )
+        self.assertEqual(tier, "T3")
+        self.assertIn("repo_unknown", reasons)
+        self.assertIn("not_t1_allowlisted", reasons)
+
+    def test_bundlebees_oracle_sandbox_and_lease_modules_are_t3(self):
+        # bundlebees_plugin/ holds the dispatch, the sandbox, the lease store and
+        # the oracle lock: it is deliberately absent from the allowlist.
+        for path in (
+            "bundlebees_plugin/oracle_lock.py",
+            "bundlebees_plugin/sandbox.py",
+            "bundlebees_plugin/leases.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_t3(
+                    "not_t1_allowlisted",
+                    repo_name="bundlebees",
+                    changes={path: "x = 1\n"},
+                )
+
+    def test_dependency_manifests_are_t3(self):
+        for repo_name, path in (
+            ("hyvv", "uv.lock"),
+            ("bundlebees", "requirements.txt"),
+            ("bundlebees", "requirements-dev.txt"),
+            ("orbitdesktop", "package.json"),
+        ):
+            with self.subTest(path=path):
+                self.assert_t3(
+                    "not_t1_allowlisted", repo_name=repo_name, changes={path: "{}\n"}
+                )
+
+    def test_agent_instruction_files_are_t3(self):
+        for path in ("AGENTS.md", "CLAUDE.md"):
+            with self.subTest(path=path):
+                self.assert_t3(
+                    "not_t1_allowlisted", repo_name="rizzstack", changes={path: "# agents\n"}
+                )
+
+    def test_test_runner_shadowing_modules_are_t3(self):
+        # A root pytest.py / pluggy.py / _pytest/ shadows the runner by import
+        # order; none of them is product surface.
+        for path in ("pytest.py", "pluggy.py", "_pytest/__init__.py"):
+            with self.subTest(path=path):
+                self.assert_t3(
+                    "not_t1_allowlisted",
+                    repo_name="rizzstack",
+                    changes={path: "VALUE = 1\n"},
+                )
+
+    def test_oracle_pytest_config_is_t3(self):
+        # `.bundlebees-oracle-pytest.ini` is not `pytest.ini`, so no existing
+        # reason names it; the allowlist catches it anyway.
+        tier, reasons = self.tier(
+            repo_name="bundlebees",
+            changes={".bundlebees-oracle-pytest.ini": "[pytest]\naddopts = -q\n"},
+        )
+        self.assertEqual(tier, "T3")
+        self.assertEqual(reasons, ["not_t1_allowlisted"])
+
+    def test_bundlebees_dashboard_change_is_t1(self):
+        # The allowlist is not empty for bundlebees: a UI surface is product.
+        self.assert_t1(
+            repo_name="bundlebees", changes={"dashboard/app.js": "export const x = 1;\n"}
+        )
+
+    def test_hook_core_change_is_t1(self):
+        self.assert_t1(repo_name="hyvv", changes={"hyvv/api.py": "VALUE = 1\n"})
 
     # ---- pyproject: parsed before/after ----------------------------------
 
@@ -434,12 +534,14 @@ def slice_repo(root, assigned, changes, test_files=()):
 class TierOutput(unittest.TestCase):
     """The gate's final line is ``class=... TIER=...``."""
 
-    def run_gate(self, repo, base, head, *extra):
+    def run_gate(self, repo, base, head, *extra, repo_slug="mojomast/rizzstack"):
         env = {
             key: value
             for key, value in os.environ.items()
             if key not in ("GITHUB_REPOSITORY", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_EVENT_PATH")
         }
+        if repo_slug is not None:
+            env["GITHUB_REPOSITORY"] = repo_slug
         return subprocess.run(
             [
                 "python3",
@@ -538,6 +640,55 @@ class TierOutput(unittest.TestCase):
             match = CLASS_LINE.match(self.last_line(proc))
             self.assertIsNotNone(match, proc.stdout)
             self.assertEqual((match.group(1), match.group(2)), (expected_class, expected_tier))
+
+    def test_a_repository_the_step_cannot_name_is_tier_three(self):
+        # No GITHUB_REPOSITORY, no origin remote, a checkout whose directory is
+        # not a known repository: the allowlist cannot apply, so it fails closed.
+        root = tempfile.mkdtemp(prefix="tier-out9-")
+        repo, base, head = slice_repo(root, ["src/slice.py"], {"src/slice.py": "new\n"})
+        proc = self.run_gate(repo, base, head, repo_slug=None)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.last_line(proc), "lease-tamper: class=slice TIER=T3")
+        self.assertIn("repo_unknown", proc.stdout)
+
+
+class RepoIdentity(unittest.TestCase):
+    """The allowlist is keyed by the repository, resolved outside the pull request."""
+
+    def test_github_repository_wins(self):
+        root = tempfile.mkdtemp(prefix="tier-id-")
+        repo, _base, _head = build_change(root, changes={"docs/readme.md": "# x\n"})
+        self.assertEqual(
+            GATE._tier_repo_name(str(repo.path), {"GITHUB_REPOSITORY": "mojomast/workflow"}),
+            "workflow",
+        )
+
+    def test_origin_remote_is_read_when_the_environment_is_silent(self):
+        root = tempfile.mkdtemp(prefix="tier-id-")
+        repo, _base, _head = build_change(root, changes={"docs/readme.md": "# x\n"})
+        repo.git("remote", "add", "origin", "git@github.com:mojomast/hyvv.git")
+        self.assertEqual(GATE._tier_repo_name(str(repo.path), {}), "hyvv")
+
+    def test_https_remote_is_read(self):
+        root = tempfile.mkdtemp(prefix="tier-id-")
+        repo, _base, _head = build_change(root, changes={"docs/readme.md": "# x\n"})
+        repo.git("remote", "add", "origin", "https://github.com/mojomast/bundlebees.git")
+        self.assertEqual(GATE._tier_repo_name(str(repo.path), {}), "bundlebees")
+
+    def test_a_plain_checkout_falls_back_to_its_directory_name(self):
+        root = tempfile.mkdtemp(prefix="tier-id-")
+        repo, _base, _head = build_change(root, changes={"docs/readme.md": "# x\n"})
+        self.assertEqual(GATE._tier_repo_name(str(repo.path), {}), Path(root).name.lower())
+
+    def test_an_unlisted_repository_has_no_allowlist(self):
+        self.assertIsNone(GATE._tier_allowlist("a-repository-nobody-allowlisted"))
+
+    def test_the_common_allowlist_covers_docs_and_new_tests_only(self):
+        allowlist = GATE._tier_allowlist("rizzstack")
+        self.assertIn(("docs/**", GATE.TIER_ALLOW_ANY), allowlist)
+        self.assertIn(("tests/**", GATE.TIER_ALLOW_NEW), allowlist)
+        self.assertTrue(GATE._tier_allowlisted("tests/test_new.py", "A", allowlist))
+        self.assertFalse(GATE._tier_allowlisted("tests/test_old.py", "M", allowlist))
 
 
 if __name__ == "__main__":
