@@ -1,0 +1,316 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "regression": true,
+      "statement": "A canonical COMMENTED line or an APPROVED state from rizzstack-reviewer[bot] at the head is an independent approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_reviewer_app_login_is_the_only_independent_approval"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "The same line or APPROVED state from rizzstack-coordinator[bot] is not an approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_coordinator_app_cannot_approve"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "The same line or APPROVED state from the owner login is not an independent approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_owner_token_cannot_approve"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "Text naming the reviewer from any other login, no login, or a look-alike login is not an approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_text_naming_the_reviewer_is_not_identity"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "regression": true,
+      "statement": "A later rejection from any login still refuses the reviewer app's approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_rejection_from_any_login_still_governs"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "statement": "REVIEWER_LOGIN and review_identity_ok live in the shared policy block of both the gate and the lane, reading user.login (REST) or author (lane facts); the block stays byte-identical and its pinned hash is tests/fixtures/shared_policy.sha256.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_identity_rule_lives_in_the_shared_policy_block",
+        "tests/test_lease_tamper.py::SharedPolicyContractTests::test_shared_policy_block_is_byte_identical",
+        "tests/test_merge_lane_v5.py::SharedPolicyContractTests::test_shared_policy_block_is_byte_identical"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-007",
+      "statement": "merge_lane_v5.decide merges a non-slice PR only on a reviewer-app approval.",
+      "tests": [
+        "tests/test_gate_authority.py::ReviewIdentityTest::test_lane_accepts_only_the_reviewer_app"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-008",
+      "statement": "The lane refuses merge_state_status BEHIND with merge_state_behind; BEHIND is not a mergeable state.",
+      "tests": [
+        "tests/test_gate_authority.py::StaleBaseTest::test_lane_refuses_a_branch_behind_its_base",
+        "tests/test_merge_lane_v5.py::GateTests::test_pr_state_gates"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-009",
+      "statement": ".github/workflows/gate-authority.yml triggers on pull_request_target only and defines job gate-authority.",
+      "tests": [
+        "tests/test_gate_authority.py::BasePinnedGateWorkflowTest::test_runs_on_pull_request_target_only"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-010",
+      "statement": "Every checkout in that workflow is the base sha with persist-credentials false; nothing checks out the head or merge ref.",
+      "tests": [
+        "tests/test_gate_authority.py::BasePinnedGateWorkflowTest::test_every_checkout_is_the_base_commit_without_credentials"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-011",
+      "statement": "The PR head is fetched as git objects only; the workflow runs only the base lease_tamper.py, installs and executes nothing from the PR, reads no secrets and interpolates no attacker-controlled string.",
+      "tests": [
+        "tests/test_gate_authority.py::BasePinnedGateWorkflowTest::test_pull_request_code_is_fetched_as_objects_and_never_run"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-012",
+      "statement": "The workflow token is read-only.",
+      "tests": [
+        "tests/test_gate_authority.py::BasePinnedGateWorkflowTest::test_token_is_read_only"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-013",
+      "statement": "The gate judges a pull_request_target event like a pull_request event (head from pull_request.head.sha).",
+      "tests": [
+        "tests/test_gate_authority.py::BasePinnedGateWorkflowTest::test_gate_judges_pull_request_target_like_a_pull_request"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-014",
+      "regression": true,
+      "statement": "A plain source/docs change and a new test_*.py module stay T1.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_plain_source_docs_and_new_test_module_stay_t1"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-015",
+      "statement": "An added line importing or calling subprocess, os.system/popen/exec/spawn, pty or child_process is T3 capability_subprocess.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_subprocess_capability_is_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-016",
+      "statement": "An added line using socket, urllib, http.client, requests, httpx, aiohttp, websocket, fetch( or XMLHttpRequest is T3 capability_network.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_network_capability_is_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-017",
+      "statement": "A dependency manifest or lockfile under an allowlisted directory is T3 dependency_manifest.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_dependency_manifests_are_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-018",
+      "statement": "An added file under a test directory that is not a test module (fixtures, helpers, __init__) is T3 test_infra.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_test_infrastructure_is_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-019",
+      "statement": "A nested .github directory is T3 ci_config.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_nested_ci_configuration_is_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-020",
+      "statement": "Validator, approval and sandbox surfaces are T3 auth_surface.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_auth_validator_and_approval_surfaces_are_t3"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-021",
+      "statement": "An unknown file kind, an executable mode or a symlink is T3 unknown_kind. New reasons apply to paths the allowlist would otherwise admit, so existing exact-reason tier tests are unchanged.",
+      "tests": [
+        "tests/test_gate_authority.py::T1AllowlistTest::test_unknown_file_kind_is_t3"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "Existing gate and lane fixtures were changed only to name the reviewer login (behaviour-neutral on main; verified by running the full suite on main and on a throwaway prototype).",
+    "Owner attestations (APPROVE (owner)) for sensitive paths are unchanged here; they become signed tokens in preauth-envelope (S2)."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "gate-authority",
+  "interfaces": [
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "REVIEWER_LOGIN"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "review_identity_ok"
+    },
+    {
+      "change": "modify",
+      "kind": "function",
+      "name": "review_form"
+    },
+    {
+      "change": "modify",
+      "kind": "constant",
+      "name": "PULL_REQUEST_EVENTS"
+    },
+    {
+      "change": "modify",
+      "kind": "function",
+      "name": "risk_tier"
+    },
+    {
+      "change": "modify",
+      "kind": "constant",
+      "name": "MERGE_STATES"
+    },
+    {
+      "change": "add",
+      "kind": "workflow",
+      "name": ".github/workflows/gate-authority.yml"
+    }
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "only rizzstack-reviewer[bot] can produce an independent approval, in the gate and the lane",
+      "a rejection from any login still governs",
+      "the required gate job runs the base copy of lease_tamper.py and executes nothing from the PR",
+      "new T3 reasons capability_subprocess, capability_network, dependency_manifest, test_infra, ci_config, auth_surface, unknown_kind",
+      "the merge lane refuses merge_state_behind"
+    ],
+    "summary": "An independent approval counts only when GitHub reports it was submitted by the authenticated rizzstack-reviewer[bot] login; review text, the coordinator app and the owner login never approve. A pull_request_target workflow runs the base branch's gate on the PR head fetched as objects only. The T1 allowlist no longer admits subprocess or network capability, dependency manifests, test infrastructure, nested CI config, auth/validator/sandbox/approval surfaces, unknown file kinds, executables or symlinks. The merge lane refuses a BEHIND pull request. Supersedes gate-identity-check (ba367f1b). The six other repos are re-vendored byte-identically after this lands."
+  },
+  "review": {
+    "approved_at": null,
+    "approved_by": null,
+    "contract_sha256": "16ff193cb2460711ccc644506333aee7cd9187ddd7e7a56ee0174ddb7e1ca793",
+    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
+    "status": "draft"
+  },
+  "risk": {
+    "blast_radius": "every merge in all seven repos and the six vendored copies of lease_tamper.py and gate-authority.yml",
+    "reasons": [
+      "this is the gate that decides who may approve and what is T1"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      ".github/workflows/gate-authority.yml",
+      "tests/fixtures/shared_policy.sha256"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/workflows/gitleaks.yml",
+      ".github/workflows/review-rerun.yml",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "tests/fixtures/review_lines.json",
+      ".github/scripts/gate_drill.py",
+      ".github/scripts/gate_drill.lock.json",
+      "tests/test_risk_tier.py",
+      "policy/rulesets/**"
+    ],
+    "test_files": [
+      "tests/test_gate_authority.py",
+      "tests/test_lease_tamper.py",
+      "tests/test_merge_lane_v5.py"
+    ]
+  },
+  "source_rev": "d44b3a9454a52a99ae2c68512057370dd0ac41ef",
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Gate authority: reviewer-app-only approvals, base-pinned gate, tight T1, no stale base",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_gate_authority.py tests/test_lease_tamper.py tests/test_merge_lane_v5.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests",
+      "python3 .github/scripts/gate_drill.py --script .github/scripts/lease_tamper.py --lock .github/scripts/gate_drill.lock.json"
+    ],
+    "independent": true,
+    "integration": true
+  }
+}
