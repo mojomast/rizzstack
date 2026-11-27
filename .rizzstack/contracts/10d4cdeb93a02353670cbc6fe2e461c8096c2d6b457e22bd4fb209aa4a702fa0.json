@@ -1,0 +1,137 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "The schema requires id, action_class, conditions, max_uses, expires_at and created_from with the stated types.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_schema_requires_the_envelope_fields"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "The policy states the 7-day expiry ceiling and names expires_at.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_states_the_seven_day_ceiling"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "The policy names the gate, merge lane, policy/**, rulesets, preauth, secrets, force-push, deleting data and automatic rollback.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_names_every_never_preauthorizable_class"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "The policy requires approved: preauth <hash>, revoke preauth <id> and states revocation is effective immediately.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_hash_approval_and_immediate_revocation"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "The policy proposes P1-P5 and names their exact conditions including source_rev/RED evidence, byte-identical vendored copies, superseded PRs, health check with automatic rollback, and dependency order with 4 bees in flight.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_proposes_the_five_initial_envelopes"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "statement": "The policy requires proving every condition from data, a ledger and a daily digest.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_mechanical_conditions_and_a_daily_digest"
+      ],
+      "verification": "test"
+    }
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "evidence_required": [
+    "red",
+    "green",
+    "review"
+  ],
+  "id": "preauth-policy",
+  "interfaces": [],
+  "outcome": {
+    "observable_behavior": [
+      "the schema requires every envelope field",
+      "the policy names every never-preauthorizable class",
+      "the five initial envelopes are proposed with exact conditions"
+    ],
+    "summary": "policy/preauth.md and schemas/preauth.schema.json: the envelope contract, the 7-day ceiling, the never-preauthorizable classes, hash approval and immediate revocation, the mechanical-conditions rule, the daily digest, and the five initial envelopes P1-P5 proposed for the owner's decision."
+  },
+  "review": {
+    "approved_at": "2026-11-27T20:13:12Z",
+    "approved_by": "Kyle (owner) typed: approved 52b1c62c4b25 7ef0c9d08261 77ad1f384b72 efb38163ea06 80e7f8cfaef2 8665c168e76a 10d4cdeb93a0 9057d3800b21 19593ba24c9c ba367f1b2661 on 2026-11-27",
+    "contract_sha256": "10d4cdeb93a02353670cbc6fe2e461c8096c2d6b457e22bd4fb209aa4a702fa0",
+    "status": "approved",
+    "test_collection": {
+      "collected": 6,
+      "manifest_sha256": "58ec17a7be0ab4d3fabf5ea0b0fa8d5d1f41637139652bc681f8e77351fe1c5d",
+      "source_rev": "0006f6148624ba0b9349f772e2580a8da3ea4a3e"
+    }
+  },
+  "risk": {
+    "blast_radius": "every future pre-authorized action",
+    "reasons": [
+      "this text is what later envelopes are judged against; a vague rule becomes standing authority"
+    ],
+    "tier": "medium"
+  },
+  "scope": {
+    "assigned_files": [
+      "policy/preauth.md",
+      "schemas/preauth.schema.json",
+      "policy/README.md"
+    ],
+    "prohibited": [
+      "tests/test_preauth_policy.py::PreauthPolicyTest",
+      "CHANGELOG.md",
+      ".rizzstack/**"
+    ],
+    "read_only": [
+      ".github/scripts/lease_tamper.py",
+      "policy/outside-review.md"
+    ],
+    "test_files": [
+      "tests/test_preauth_policy.py"
+    ]
+  },
+  "source_rev": "0006f6148624ba0b9349f772e2580a8da3ea4a3e",
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Pre-authorization policy, schema and initial envelopes",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_policy.py::PreauthPolicyTest"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
