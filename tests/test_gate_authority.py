@@ -364,6 +364,8 @@ def yaml_cross_check(text, doc):
 
 # --------------------------------------------------------------- base-pinned gate workflow
 GATE_EVENT_TYPES = {"opened", "synchronize", "reopened", "edited", "ready_for_review"}
+#: A retarget (edited) and a push (synchronize) must each re-run the gate from the new base.
+GATE_REQUIRED_TYPES = {"opened", "synchronize", "reopened", "edited"}
 CHECKOUT_RE = re.compile(r"actions/checkout@[0-9a-f]{40}")
 BASE_REF = "${{ github.event.pull_request.base.sha }}"
 PR_NUMBER = "${{ github.event.pull_request.number }}"
@@ -415,6 +417,8 @@ def gate_workflow_violations(text):
             and on["pull_request_target"]["types"]
             and set(on["pull_request_target"]["types"]) <= GATE_EVENT_TYPES):
         bad.append("trigger_not_pull_request_target_only")
+    elif not GATE_REQUIRED_TYPES <= set(on["pull_request_target"]["types"]):
+        bad.append("trigger_types_incomplete")
     if doc.get("permissions") != {"contents": "read"}:
         bad.append("permissions_not_contents_read")
     jobs = doc.get("jobs")
@@ -476,6 +480,15 @@ class BasePinnedGateWorkflowTest(unittest.TestCase):
         self.assertTrue(any(item.startswith("job_permissions") for item in bad), bad)
         self.assertTrue(any(item.startswith("expression_in_run") for item in bad), bad)
         self.assertIn("steps_not_exactly_checkout_fetch_judge", bad)
+
+    def test_gate_trigger_types_include_edited(self):
+        # without `edited`, retargeting the PR's base fires no new run (the retarget attack)
+        text = (WORKFLOW_FIXTURES / "types_without_edited.yml").read_text(encoding="utf-8")
+        self.assertEqual(gate_workflow_violations(text), ["trigger_types_incomplete"])
+        self.assertTrue(WORKFLOW.is_file(), "missing .github/workflows/gate-authority.yml")
+        doc = strict_yaml(WORKFLOW.read_text(encoding="utf-8"))
+        self.assertLessEqual(GATE_REQUIRED_TYPES, set(doc["on"]["pull_request_target"]["types"]))
+        self.assertIn("edited", doc["on"]["pull_request_target"]["types"])
 
     def test_strict_parser_refuses_constructs_that_hide_structure(self):
         for text in ("a: {b: c}\n", "a: &x 1\nb: *x\n", "a: !tag 1\n", "a: 1\na: 2\n",
@@ -639,6 +652,8 @@ class ReviewRerunTest(unittest.TestCase):
 REPO = "mojomast/rizzstack"
 GATE_WORKFLOW_PATH = ".github/workflows/gate-authority.yml"
 REVIEW_AT = "2026-11-27T22:00:00Z"
+BASE_TIP = "4" * 40          # main has moved on since the gate run started
+FOREIGN = "6" * 40           # a commit that is not on main (another base branch)
 
 
 def _gate_run(**overrides):
@@ -646,7 +661,8 @@ def _gate_run(**overrides):
            "path": GATE_WORKFLOW_PATH, "event": "pull_request_target", "head_sha": BASE,
            "head_branch": HEAD_BRANCH, "status": "completed", "conclusion": "success",
            "created_at": "2026-11-27T22:05:00Z", "run_started_at": "2026-11-27T22:05:00Z",
-           "check_suite_id": 502, "pull_requests": [{"number": 12, "head": {"sha": HEAD}, "base": {"sha": BASE}}],
+           "check_suite_id": 502,
+           "pull_requests": [{"number": 12, "head": {"sha": HEAD}, "base": {"ref": "main", "sha": BASE}}],
            "repository": {"full_name": REPO}, "head_repository": {"full_name": REPO},
            "actor": {"login": "someone"}, "triggering_actor": {"login": "someone"}}
     run.update(overrides)
@@ -688,6 +704,9 @@ class _FakeLaneApi:
         self.plan = tmp / "plan.json"
         self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
         self.paths = []
+        self.base_tip = BASE_TIP
+        # compare/<run head_sha>...<base tip> statuses; any other pair at the tip is "diverged"
+        self.gate_compares = {(BASE, BASE_TIP): "ahead", (BASE_TIP, BASE_TIP): "identical"}
 
     def add_run(self, run, app="github-actions"):
         self.workflow_runs.append(run)
@@ -721,6 +740,12 @@ class _FakeLaneApi:
             if app is None:
                 raise AssertionError("unknown check suite " + match.group(1))
             return {"id": int(match.group(1)), "app": {"slug": app}, "head_sha": BASE}, ""
+        if re.fullmatch(r"/repos/[^/]+/[^/]+/git/ref/heads/main", path):
+            return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": self.base_tip}}, ""
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/compare/([0-9a-f]{40})\.\.\.([0-9a-f]{40})", path)
+        if match and match.group(2) == self.base_tip:
+            status = self.gate_compares.get((match.group(1), match.group(2)), "diverged")
+            return {"status": status, "files": []}, ""
         if "/compare/" in path:
             return {"status": "ahead", "files": []}, ""
         raise AssertionError("unexpected REST path: " + path)
@@ -749,13 +774,14 @@ class GateAuthorityRunTest(unittest.TestCase):
                                                          "output_tail": "lease-tamper: class=non-slice\n"},
                                   verify_dir=verify, plan_path=api.plan, required_checks=required)
 
-    def verdict(self, *runs, app="github-actions", head_checks=(), reviews=None, **kwargs):
+    def verdict(self, *runs, app="github-actions", head_checks=(), reviews=None, compares=None, **kwargs):
         api = _FakeLaneApi(self)
         for run in runs:
             api.add_run(run, app)
         api.check_runs.extend(head_checks)
         if reviews is not None:
             api.reviews = reviews
+        api.gate_compares.update(compares or {})
         return LANE.decide(self.facts(api, **kwargs))
 
     def assert_refused(self, reason, *runs, **kwargs):
@@ -828,6 +854,49 @@ class GateAuthorityRunTest(unittest.TestCase):
         self.assertTrue(self.verdict(rerun, reviews=late)["merge"])
         for bad in (None, "", "yesterday", "2026-11-27 22:08:00"):
             self.assert_refused("gate_authority_stale", _gate_run(run_started_at=bad))
+
+    # ---- r4: the run must have judged this PR against its CURRENT base (retarget attack)
+    def test_run_from_another_base_ref_refuses(self):
+        retarget = _gate_run(head_sha=FOREIGN,
+                             pull_requests=[{"number": 12, "head": {"sha": HEAD}, "base": {"ref": "x", "sha": FOREIGN}}])
+        self.assert_refused("gate_authority_wrong_base", retarget)
+        # even if the foreign base commit were somehow on main, the base ref must match
+        self.assert_refused("gate_authority_wrong_base", retarget, compares={(FOREIGN, BASE_TIP): "ahead"})
+        for base in ({"ref": "x", "sha": BASE}, {"ref": "main-old", "sha": BASE}, {"ref": "", "sha": BASE},
+                     {"sha": BASE}, None):
+            pr = {"number": 12, "head": {"sha": HEAD}}
+            if base is not None:
+                pr["base"] = base
+            self.assert_refused("gate_authority_wrong_base", _gate_run(pull_requests=[pr]))
+
+    def test_run_whose_workflow_commit_is_not_on_the_current_base_refuses(self):
+        for status in ("diverged", "behind", None):
+            compares = {(FOREIGN, BASE_TIP): status} if status else {}
+            self.assert_refused("gate_authority_wrong_base", _gate_run(head_sha=FOREIGN), compares=compares)
+        for bad in (None, "", "not-a-sha"):
+            self.assert_refused("gate_authority_wrong_base", _gate_run(head_sha=bad))
+
+    def test_run_at_the_current_base_tip_or_an_ancestor_counts(self):
+        self.assertTrue(self.verdict(_gate_run())["merge"])                        # BASE is behind the tip
+        self.assertTrue(self.verdict(_gate_run(head_sha=BASE_TIP))["merge"])       # identical to the tip
+
+    def test_lane_measures_the_current_base_tip_and_ancestry(self):
+        api = _FakeLaneApi(self)
+        api.add_run(_gate_run())
+        self.facts(api)
+        self.assertIn("/repos/%s/git/ref/heads/main" % REPO, api.paths)
+        self.assertIn("/repos/%s/compare/%s...%s" % (REPO, BASE, BASE_TIP), api.paths)
+
+    def test_a_run_starting_in_the_same_second_as_a_review_is_stale(self):
+        same = [{"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
+                 "submitted_at": "2026-11-27T22:05:00Z"}]
+        self.assert_refused("gate_authority_stale", _gate_run(run_started_at="2026-11-27T22:05:00Z"), reviews=same)
+        self.assertTrue(self.verdict(_gate_run(run_started_at="2026-11-27T22:05:01Z"), reviews=same)["merge"])
+
+    def test_a_queued_or_waiting_run_is_not_green(self):
+        for state in ({"status": "queued", "conclusion": None}, {"status": "waiting", "conclusion": None},
+                      {"status": "pending", "conclusion": None}, {"status": "requested", "conclusion": None}):
+            self.assert_refused("gate_authority_not_green", _gate_run(**state))
 
     def test_gate_is_demanded_whenever_the_base_carries_the_gate_workflow(self):
         self.assert_refused("gate_authority_unproven", required=("ci-gate",))

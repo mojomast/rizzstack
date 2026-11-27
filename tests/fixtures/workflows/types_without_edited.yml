@@ -1,0 +1,31 @@
+name: gate-authority
+
+# The base branch's gate judges the pull request.  pull_request_target runs this
+# file from the base commit; the head is fetched as git objects and never run.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  gate-authority:
+    name: gate-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Fetch the pull request head as objects only
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+      - name: Judge with the base copy of the gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/lease_tamper.py
