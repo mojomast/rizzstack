@@ -1,0 +1,38 @@
+{
+  "schema": "rizzstack.brief/1",
+  "objective": "Outside review of <repo>#<pr> at head <40-hex head sha>. Follow skills/rizzstack-outside-review/SKILL.md: read the staged packet under review/, run the procedure for each review type, verify every claim in review/claims.md, and write review/verdict.json (rizzstack.review-verdict/1). Read-only: do not modify review/repo/; write only review/verdict.json and review/scratch/**.",
+  "project": "<repo>",
+  "source_rev": "<40-hex head sha of the PR under review>",
+  "assigned_files": [
+    "review/verdict.json"
+  ],
+  "read_only": [
+    "review/packet.json",
+    "review/repo/**",
+    "review/checks.json",
+    "review/reviews.json",
+    "review/verify/**",
+    "review/lease/**",
+    "review/related/**",
+    "review/claims.md"
+  ],
+  "acceptance": {
+    "criteria": [
+      "review/verdict.json validates against skills/rizzstack-outside-review/verdict.schema.json.",
+      "verdict.head_sha equals packet.head_sha and verdict.pr/repo match the packet.",
+      "Every blocking finding has a failure_scenario; every gate_security blocking finding cites evidence under review/scratch/.",
+      "Every claim in review/claims.md appears in verdict.claims with a status.",
+      "Nothing outside review/verdict.json and review/scratch/** was written."
+    ]
+  },
+  "budget": {
+    "timeout_s": 2700,
+    "max_tool_calls": 120
+  },
+  "risk": {
+    "tier": "low",
+    "reasons": [
+      "read-only review; the verdict is validated and posted by the coordinator"
+    ]
+  }
+}

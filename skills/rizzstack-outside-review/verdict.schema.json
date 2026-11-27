@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/mojomast/rizzstack/main/skills/rizzstack-outside-review/verdict.schema.json",
+  "title": "rizzstack.review-verdict/1",
+  "description": "One outside reviewer's verdict on one pull request at one head sha. Written by a review bee; validated and posted by the coordinator (policy/outside-review.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repo", "pr", "head_sha", "verdict", "review_types", "summary", "checked", "claims", "findings", "owner_decisions", "reviewer"],
+  "properties": {
+    "schema": {"const": "rizzstack.review-verdict/1"},
+    "repo": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "pr": {"type": "integer", "minimum": 1},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "verdict": {"enum": ["approve", "changes_requested", "needs_owner"]},
+    "review_types": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["lease_contract", "contract_refreeze", "slice", "gate_security", "vendored_copy", "deploy_path", "general"]}
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+    "checked": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 400}},
+    "not_checked": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 400}},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "status", "evidence"],
+        "properties": {
+          "claim": {"type": "string", "minLength": 1, "maxLength": 400},
+          "status": {"enum": ["verified", "refuted", "unverified"]},
+          "evidence": {"type": "string", "maxLength": 800}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "title", "detail"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^F[0-9]+$"},
+          "severity": {"enum": ["blocking", "follow_up", "nit"]},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120},
+          "detail": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "failure_scenario": {"type": "string", "maxLength": 800},
+          "location": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {"path": {"type": "string"}, "line": {"type": "integer", "minimum": 1}}
+          },
+          "evidence": {"type": "array", "items": {"type": "string", "pattern": "^review/scratch/"}}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"severity": {"const": "blocking"}}},
+            "then": {"required": ["failure_scenario"]}
+          }
+        ]
+      }
+    },
+    "owner_decisions": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 600}},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "model_family", "harness"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "model_family": {"type": "string", "minLength": 1},
+        "harness": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verdict": {"const": "approve"}}},
+      "then": {"properties": {"findings": {"not": {"contains": {"required": ["severity"], "properties": {"severity": {"const": "blocking"}}}}}}}
+    },
+    {
+      "if": {"properties": {"verdict": {"const": "changes_requested"}}},
+      "then": {"properties": {"findings": {"contains": {"required": ["severity"], "properties": {"severity": {"const": "blocking"}}}}}}
+    },
+    {
+      "if": {"properties": {"verdict": {"const": "needs_owner"}}},
+      "then": {"properties": {"owner_decisions": {"minItems": 1}}}
+    }
+  ]
+}

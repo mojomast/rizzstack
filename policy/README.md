@@ -12,3 +12,5 @@
 To change a ruleset, update it in GitHub (a settings change that needs the owner's yes), then refresh the snapshot here in the same PR.
 
 Known gaps: no required reviewer (one maintainer); rizzstack's path-filtered `codemap` check isn't required (a path-filtered check never reports on unrelated PRs and would block them).
+
+See also `outside-review.md`: who may review a pull request, what a review bee receives, and how its verdict is validated and posted.
