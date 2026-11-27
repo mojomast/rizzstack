@@ -65,13 +65,13 @@ class PreauthPolicyTest(unittest.TestCase):
         self.assertIn("daily digest", self.text.lower())
         self.assertIn("ledger", self.text.lower())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_p1_rejects_a_refreeze_that_changes_frozen_test_blobs(self):
         """A re-freeze is not a spec change: P1 must require the frozen test blobs to be
         identical at the old and the new source_rev."""
         text = self.text.lower()
         self.assertIn("frozen test blobs", text)
         self.assertIn("identical at the old and new source_rev", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
