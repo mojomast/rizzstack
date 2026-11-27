@@ -299,8 +299,9 @@
     "approved_at": null,
     "approved_by": null,
     "contract_sha256": "1a3d79af2b66857d02d1c981dc321fdcc2747e93094d12986da5b245bbe4e5d7",
-    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
-    "status": "draft"
+    "note": "superseded before owner approval by 84d5fdb4 after independent review (GROKCHAT); never approved",
+    "status": "superseded",
+    "superseded_by": "84d5fdb44b307a2f4213f602e919fb96bb9cd16255c7f3d1277b4045c6d78116"
   },
   "risk": {
     "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
