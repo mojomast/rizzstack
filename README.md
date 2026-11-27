@@ -93,6 +93,8 @@ This repository is the map. Each component has its own implementation, setup ins
 
 The contracts are the connection points. A coordinator can speak Hyvv’s `/v1` API without running Orbit; a team can adopt Workflow’s contracts without running any workers. To integrate another tool, start with the [protocol map](docs/protocol.md) and [agent extension guide](docs/adding-an-agent.md).
 
+To run the stack on your own repositories, give the orchestrator and the reviewer their own GitHub identities. [docs/github-apps.md](docs/github-apps.md) sets up the two GitHub Apps, `rizzstack-coordinator` (builds and merges) and `rizzstack-reviewer` (posts reviews only), while your own account keeps the deciding vote.
+
 ## How it was built
 
 [Kyle Durepos](https://github.com/mojomast) developed rizzstack while working with agents on games, creative tools, and Hermes plugins. The [project history](https://github.com/mojomast/workflow/blob/main/docs/07-projects.md) traces those builds. Kyle directed the work; coordinator agents broke it into briefs, and coding agents worked in disposable sandboxes. Some of the most useful parts of the stack came from runs that went wrong.

@@ -1,0 +1,17 @@
+{
+  "name": "<app-name>",
+  "url": "https://github.com/<owner>/rizzstack",
+  "hook_attributes": {
+    "url": "https://github.com/<owner>/rizzstack",
+    "active": false
+  },
+  "redirect_url": "https://github.com/<owner>/rizzstack",
+  "public": false,
+  "default_events": [],
+  "default_permissions": {
+    "pull_requests": "write",
+    "contents": "read",
+    "checks": "read",
+    "metadata": "read"
+  }
+}
