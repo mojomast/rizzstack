@@ -426,8 +426,9 @@
     "approved_at": null,
     "approved_by": null,
     "contract_sha256": "35ff6308c3d284eb965788282e1eb5be9006c774862705fd2ef4fd11c2b014db",
-    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
-    "status": "draft"
+    "note": "superseded before owner approval by ab74a79f after round-2 independent review (GROKCHAT); never approved",
+    "status": "superseded",
+    "superseded_by": "ab74a79f600cd525461309f8f165ff19f1536cfcbf3dbe4c39f18fc08ab6c2e5"
   },
   "risk": {
     "blast_radius": "every merge in all seven repos and the six vendored copies of lease_tamper.py, gate-authority.yml and review-rerun.yml",
