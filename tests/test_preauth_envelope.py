@@ -10,8 +10,9 @@ facts only; every doubt is a named refusal, including missing state (fail closed
 Production code calls ``check()``, which reads ``policy/allowed_signers`` from the checkout the
 module itself lives in (the base checkout) and pins it to the module constant
 ``OWNER_FINGERPRINTS``; it takes no trust-root override.  The decision tests below drive the
-clearly test-only ``check_for_tests()``, which accepts a temporary trust root and pin; the module
-never calls it, and ``preauth-wiring`` must call ``check()`` only.
+private, test-only ``_check_for_tests()``, which accepts a temporary trust root and pin; the module
+never calls it, and the gate and lane may reference only ``check`` and ``PreauthRefused`` (frozen
+here for ``preauth-wiring``).
 
 Every checker call in this file runs with process creation recorded: the only program the
 checker may start is ``ssh-keygen -Y verify`` with a bounded timeout, never ``-Y sign``.  A
@@ -155,24 +156,37 @@ class ProcessRecorder:
 
     def __init__(self, case, fail=None):
         self.case, self.fail, self.calls, self.timeouts = case, fail, [], []
+        self.envs, self.executables = [], []
+        self.inside = False
         self._real_popen = subprocess.Popen
 
     def popen(self, args, *a, **k):
         argv = [str(x) for x in (args if isinstance(args, (list, tuple)) else [args])]
         self.calls.append(argv)
+        self.envs.append(k.get("env"))
+        self.executables.append(k.get("executable"))
         if self.fail == "missing":
             raise FileNotFoundError(2, "No such file or directory", argv[0])
         if self.fail == "timeout":
             return _HangingProcess(argv, self)
-        return self._real_popen(args, *a, **k)
+        self.inside = True  # the recorded Popen may itself use os.posix_spawn/fork_exec
+        try:
+            return self._real_popen(args, *a, **k)
+        finally:
+            self.inside = False
 
     def forbid(self, name):
+        real = getattr(os, name.split(".", 1)[-1])
+
         def refuse(*a, **k):
+            if self.inside:
+                return real(*a, **k)
             self.calls.append([name] + [str(x) for x in a])
             raise AssertionError("checker started a process via %s" % name)
         return refuse
 
     def __enter__(self):
+        self.environ_before = dict(os.environ)
         self.patches = [mock.patch("subprocess.Popen", self.popen)]
         for name in ("system", "popen", "posix_spawn", "posix_spawnp", "execv", "execve", "execvp",
                      "spawnv", "spawnve", "fork", "forkpty"):
@@ -189,6 +203,15 @@ class ProcessRecorder:
             self.case.assertTrue(argv and os.path.basename(argv[0]) == "ssh-keygen", argv)
             self.case.assertEqual(argv[1:3], ["-Y", "verify"], argv)
             self.case.assertNotIn("sign", argv[1:3], argv)
+            # r4: absolute executable, resolved outside any temp dir, and a constant environment
+            self.case.assertEqual(argv[0], "/usr/bin/ssh-keygen", argv)
+            resolved = os.path.realpath(argv[0])
+            self.case.assertFalse(resolved.startswith(os.path.realpath(tempfile.gettempdir()) + os.sep), resolved)
+        for env in self.envs:
+            self.case.assertEqual(env, {"PATH": "/usr/bin:/bin"}, "ssh-keygen must run with a constant env")
+        for executable in self.executables:
+            self.case.assertIsNone(executable)
+        self.case.assertEqual(dict(os.environ), self.environ_before, "the checker changed os.environ")
         return False
 
 
@@ -240,7 +263,7 @@ class EnvelopeCase(unittest.TestCase):
                                                         sort_keys=True).encode("utf-8")
         signature = signature if signature is not None else self.keys.sign(data)
         with ProcessRecorder(self, fail) as self.recorder:
-            return self.pre.check_for_tests(
+            return self.pre._check_for_tests(
                 data, signature, allowed_signers=str(signers or self.keys.signers),
                 trusted_fingerprints=frozenset(trusted if trusted is not None else {self.keys.fingerprint}),
                 repo=repo, base_rev=base, contract_sha256=contract, tier=tier, now=now,
@@ -541,6 +564,17 @@ class VerifierTest(EnvelopeCase):
         self.assertTrue(all(t is not None and 0 < t <= 60 for t in self.recorder.timeouts[:1]),
                         self.recorder.timeouts)
 
+    def test_a_path_hijack_cannot_forge_a_signature(self):
+        fake = Path(tempfile.mkdtemp(prefix="preauth-hijack-"))
+        self.addCleanup(shutil.rmtree, fake, True)
+        (fake / "ssh-keygen").write_text("#!/bin/sh\necho Good signature; exit 0\n")
+        os.chmod(fake / "ssh-keygen", 0o755)
+        path = str(fake) + os.pathsep + os.environ.get("PATH", "")
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.refused("envelope_bad_signature", signature=b"-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n")
+        self.assertEqual(self.recorder.calls[0][0], "/usr/bin/ssh-keygen")
+        self.assertEqual(self.recorder.envs, [{"PATH": "/usr/bin:/bin"}])
+
     def test_every_process_is_ssh_keygen_verify(self):
         self.decide()
         self.assertEqual([argv[1:3] for argv in self.recorder.calls], [["-Y", "verify"]])
@@ -605,6 +639,12 @@ PRODUCTION_PARAMETERS = ("data", "signature", "repo", "base_rev", "contract_sha2
                          "is_ancestor")
 OVERRIDE_PARAMETERS = {"allowed_signers", "trusted_fingerprints", "signers", "fingerprints", "trust_root",
                        "signers_path", "root", "base_dir"}
+
+
+def _dotted_root(node):
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
 
 
 def _load_copy(tree, name):
@@ -697,33 +737,112 @@ class ProductionEntryPointTest(unittest.TestCase):
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))
         functions = {node.name: node for node in ast.walk(tree)
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        self.assertIn("check_for_tests", functions)
-        self.assertIn("test", (ast.get_docstring(functions["check_for_tests"]) or "").lower())
+        self.assertIn("_check_for_tests", functions)
+        self.assertNotIn("check_for_tests", functions, "the test-only entry point must be private")
+        self.assertIn("test", (ast.get_docstring(functions["_check_for_tests"]) or "").lower())
         for name, node in functions.items():
             args = {a.arg for a in node.args.args + node.args.kwonlyargs + node.args.posonlyargs}
-            if args & {"trusted_fingerprints"} and name != "check_for_tests":
-                self.assertTrue(name.startswith("_"), "public %s takes a trust-root override" % name)
+            if args & {"trusted_fingerprints", "allowed_signers"} and not name.startswith("_"):
+                if name != "verify_signature" or "trusted_fingerprints" in args:
+                    self.fail("public %s takes a trust-root override" % name)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 func = node.func
                 called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-                self.assertNotEqual(called, "check_for_tests", "the module calls its test-only entry point")
-            if isinstance(node, ast.Name) and node.id == "check_for_tests":
-                self.fail("the module references check_for_tests outside its definition")
+                self.assertNotIn(called, ("check_for_tests", "_check_for_tests"),
+                                 "the module calls its test-only entry point")
+            if isinstance(node, ast.Name) and node.id in ("check_for_tests", "_check_for_tests"):
+                self.fail("the module references its test-only entry point outside its definition")
+        public = sorted(n for n in functions if not n.startswith("_") and "check" in n)
+        self.assertEqual(public, ["check"], public)
 
 
-# --------------------------------------------------------------- static process rule
-SSH_ARGV = ("ssh-keygen", "-Y", "verify", "-f", None, "-I", None, "-n", None, "-s", None)
-SUBPROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output"}
-SUBPROCESS_EXCEPTIONS = {"SubprocessError", "TimeoutExpired", "CalledProcessError"}
-CALL_KEYWORDS = {"input", "capture_output", "timeout", "stdin", "stdout", "stderr", "check"}
-BANNED_MODULES = {"_posixsubprocess", "ctypes", "importlib", "multiprocessing", "pty", "runpy", "cffi",
-                  "pexpect", "sh", "asyncio", "concurrent", "_winapi", "posix", "nt", "builtins", "code",
-                  "pickle", "marshal", "cryptography", "nacl", "paramiko"}
-BANNED_NAMES = {"__import__", "eval", "exec", "compile", "getattr", "setattr", "globals", "locals", "vars",
-                "__builtins__", "breakpoint", "__loader__", "__spec__"}
-BANNED_ATTRS = {"__dict__", "__globals__", "__builtins__", "__subclasses__", "__code__", "modules"}
-BANNED_OS = re.compile(r"^(system|popen|fork.*|exec.*|spawn.*|posix_spawn.*|startfile|_exit)$")
+
+class WiringFreezeTest(unittest.TestCase):
+    """Frozen for the separate slice preauth-wiring; holds at RED and must keep holding."""
+
+    def test_gate_and_lane_reference_only_check_from_preauth(self):
+        """Frozen for preauth-wiring: the gate and lane may use preauth.check and PreauthRefused only."""
+        for path in (ROOT / ".github" / "scripts" / "lease_tamper.py", ROOT / "scripts" / "merge_lane_v5.py"):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            aliases = {"preauth"}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.split(".")[-1] == "preauth":
+                            aliases.add(alias.asname or alias.name)
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "preauth":
+                    for alias in node.names:
+                        self.assertIn(alias.name, ("check", "PreauthRefused"), (path.name, alias.name))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and _dotted_root(node) in aliases:
+                    self.assertIn(node.attr, ("check", "PreauthRefused"), (path.name, node.attr))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    self.assertNotIn("_check_for_tests", node.value, path.name)
+                    self.assertNotIn("check_for_tests", node.value, path.name)
+                if isinstance(node, ast.Name):
+                    self.assertNotIn(node.id, ("_check_for_tests", "check_for_tests", "_decide"), path.name)
+
+
+# --------------------------------------------------------------- static process rule (r4: allowlists)
+SSH_KEYGEN = "/usr/bin/ssh-keygen"
+SSH_ENV = {"PATH": "/usr/bin:/bin"}
+SSH_ARGV = (SSH_KEYGEN, "-Y", "verify", "-f", None, "-I", None, "-n", None, "-s", None)
+CALL_KEYWORDS = {"input", "capture_output", "timeout", "check", "env"}
+#: Modules preauth.py may import (plain ``import x``, top level, no alias).
+ALLOWED_IMPORTS = {"base64", "binascii", "hashlib", "json", "os", "posixpath", "re", "subprocess", "tempfile"}
+#: ``from x import y`` allowed only for these names.
+ALLOWED_FROM = {"__future__": {"annotations"}, "datetime": {"datetime", "timezone", "timedelta"}}
+#: The only attributes reachable on each imported module.
+MODULE_ATTRS = {
+    "os": {"path", "fspath", "fsencode", "fsdecode", "sep"},
+    "os.path": {"join", "dirname", "abspath", "basename", "normpath", "realpath", "isfile"},
+    "posixpath": {"normpath", "join", "dirname", "basename"},
+    "subprocess": {"run", "SubprocessError", "TimeoutExpired", "CalledProcessError"},
+    "tempfile": {"TemporaryDirectory", "NamedTemporaryFile"},
+    "json": {"loads", "dumps", "JSONDecodeError"},
+    "re": {"compile", "fullmatch", "match", "search", "escape", "ASCII", "IGNORECASE"},
+    "hashlib": {"sha256"},
+    "base64": {"b64decode", "b64encode"},
+    "binascii": {"Error"},
+}
+BANNED_NAMES = {"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
+                "breakpoint", "input", "help", "license", "credits", "copyright", "exit", "quit", "memoryview"}
+ALLOWED_DUNDER_NAMES = {"__file__", "__name__"}
+#: Attribute names banned on ANY object (process, environment, permissions, frames).
+BANNED_ATTRS = re.compile(r"^(environ|environb|putenv|unsetenv|chmod|fchmod|lchmod|chown|lchown|fchown|system|"
+                          r"popen|startfile|kill|killpg|fork.*|exec.*|spawn.*|posix_spawn.*|Popen|call|"
+                          r"check_call|check_output|getoutput|getstatusoutput|run|gi_frame|gi_code|cr_frame|"
+                          r"ag_frame|tb_frame|f_globals|f_locals|f_builtins|f_back|f_code|co_code)$")
+PROTECTED_NAMES = {"open", "print", "isinstance", "type"}
+
+
+def _dotted(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _write_mode(call):
+    mode = None
+    if len(call.args) >= 2:
+        mode = call.args[1]
+    for kw in call.keywords:
+        if kw.arg == "mode":
+            mode = kw.value
+        if kw.arg is None or kw.arg == "opener":
+            return True
+    if mode is None:
+        return False
+    if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)):
+        return True
+    return any(ch in mode.value for ch in "wax+")
 
 
 def process_violations(source):
@@ -733,62 +852,110 @@ def process_violations(source):
     except SyntaxError as exc:
         return ["syntax_error:%s" % exc.lineno]
     out = []
-    allowed_attr_nodes = set()
-    calls = []
+    modules = set()
+    from_names = set()
+    top = set(id(n) for n in tree.body)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
+            if id(node) not in top:
+                out.append("nested_import")
             for alias in node.names:
-                top = alias.name.split(".")[0]
-                if top in BANNED_MODULES:
-                    out.append("banned_import:" + alias.name)
-                if top == "subprocess" and (alias.asname or alias.name != "subprocess"):
+                if alias.name == "subprocess" and alias.asname:
                     out.append("subprocess_alias")
-                if top == "os" and (alias.asname or alias.name != "os"):
-                    out.append("os_alias")
-        elif isinstance(node, ast.ImportFrom):
-            top = (node.module or "").split(".")[0]
-            if node.level == 0 and top in BANNED_MODULES:
-                out.append("banned_import:" + (node.module or ""))
-            if top == "subprocess":
-                out.append("from_subprocess_import")
-            if top == "os":
-                for alias in node.names:
-                    if BANNED_OS.match(alias.name) or alias.name == "*":
-                        out.append("from_os_import:" + alias.name)
-        elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
-            out.append("banned_name:" + node.id)
-        elif isinstance(node, ast.Attribute):
-            if node.attr in BANNED_ATTRS:
-                out.append("banned_attr:" + node.attr)
-            if isinstance(node.value, ast.Name) and node.value.id == "os" and BANNED_OS.match(node.attr):
-                out.append("os_process:" + node.attr)
-            if isinstance(node.value, ast.Name) and node.value.id == "subprocess":
-                if node.attr in SUBPROCESS_EXCEPTIONS:
-                    allowed_attr_nodes.add(id(node.value))
-                elif node.attr in SUBPROCESS_CALLS:
-                    pass
+                if alias.name not in ALLOWED_IMPORTS:
+                    out.append("import_not_allowed:" + alias.name)
+                elif alias.asname:
+                    out.append("import_alias:" + alias.name)
                 else:
-                    out.append("subprocess_attr:" + node.attr)
+                    modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if id(node) not in top:
+                out.append("nested_import")
+            mod = node.module or ""
+            if mod.split(".")[0] == "subprocess":
+                out.append("from_subprocess_import")
+            allowed = ALLOWED_FROM.get(mod) if node.level == 0 else None
+            for alias in node.names:
+                if allowed is None or alias.name not in allowed or alias.asname:
+                    out.append("import_not_allowed:%s.%s" % (mod, alias.name))
+                else:
+                    from_names.add(alias.name)
+    bound = modules | from_names | PROTECTED_NAMES
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    calls = []
+    for node in ast.walk(tree):
+        # rebinding or shadowing a module, an imported name or a protected builtin
+        targets = []
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            targets = [item.optional_vars for item in node.items if item.optional_vars is not None]
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in bound:
+                out.append("rebind:" + node.name)
+        elif isinstance(node, ast.arg) and node.arg in bound:
+            out.append("rebind:" + node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name in bound:
+            out.append("rebind:" + node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            out.append("global_statement")
+        elif isinstance(node, ast.Delete):
+            targets = node.targets
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name) and sub.id in bound:
+                    out.append("rebind:" + sub.id)
+        if isinstance(node, ast.Name):
+            if node.id in BANNED_NAMES:
+                out.append("banned_name:" + node.id)
+            if node.id.startswith("__") and node.id.endswith("__") and node.id not in ALLOWED_DUNDER_NAMES:
+                out.append("dunder_name:" + node.id)
+            if BANNED_ATTRS.match(node.id):
+                out.append("banned_identifier:" + node.id)
+            if node.id in modules:
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Attribute) and parent.value is node):
+                    out.append("module_reference:" + node.id)
+                else:
+                    attr = parent.attr
+                    if attr not in MODULE_ATTRS.get(node.id, set()):
+                        out.append("module_attr:%s.%s" % (node.id, attr))
+                    elif node.id == "os" and attr == "path":
+                        grand = parents.get(id(parent))
+                        if not (isinstance(grand, ast.Attribute) and grand.value is parent
+                                and grand.attr in MODULE_ATTRS["os.path"]):
+                            out.append("module_reference:os.path")
+            if node.id == "open":
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    out.append("open_reference")
+                elif _write_mode(parent):
+                    out.append("write_mode_open")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_"):
+                out.append("private_or_dunder_attr:" + node.attr)
+            dotted = _dotted(node)
+            if BANNED_ATTRS.match(node.attr) and dotted != "subprocess.run":
+                out.append("banned_attr:" + node.attr)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value.strip().lower()
             if text == "sign" or re.search(r"-y\s*sign", text):
                 out.append("sign_literal")
+        elif isinstance(node, ast.Lambda):
+            out.append("lambda")
         if isinstance(node, ast.Call):
             func = node.func
-            if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
-                    and func.value.id == "subprocess"):
-                if func.attr not in SUBPROCESS_CALLS:
-                    out.append("subprocess_attr:" + func.attr)
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "subprocess":
                 calls.append(node)
-                allowed_attr_nodes.add(id(func.value))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == "subprocess" and id(node) not in allowed_attr_nodes:
-            out.append("subprocess_reference")
     if len(calls) != 1:
         out.append("process_calls:%d" % len(calls))
-    flag_slots = {3}
     for call in calls:
-        if not call.args or len(call.args) != 1:
+        if call.func.attr != "run":
+            out.append("subprocess_attr:" + call.func.attr)
+        if len(call.args) != 1:
             out.append("argv_args")
             continue
         argv = call.args[0]
@@ -800,12 +967,22 @@ def process_violations(source):
                     if not isinstance(got, ast.Name):
                         out.append("argv_computed")
                 elif not (isinstance(got, ast.Constant) and got.value == want):
-                    out.append("argv_shape")
+                    out.append("argv_shape" if want != SSH_KEYGEN else "ssh_keygen_not_absolute")
         names = [k.arg for k in call.keywords]
         if None in names or any(k not in CALL_KEYWORDS for k in names if k):
             out.append("call_keyword")
         if "timeout" not in names:
             out.append("call_timeout_missing")
+        env = [k.value for k in call.keywords if k.arg == "env"]
+        if not env:
+            out.append("call_env_missing")
+        else:
+            node = env[0]
+            ok = (isinstance(node, ast.Dict) and len(node.keys) == 1
+                  and all(isinstance(x, ast.Constant) for x in node.keys + node.values)
+                  and {k.value: v.value for k, v in zip(node.keys, node.values)} == SSH_ENV)
+            if not ok:
+                out.append("call_env_not_constant")
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and node.value == "-f":
             in_slot = any(isinstance(c.args[0], ast.List) and len(c.args[0].elts) > 3
@@ -821,6 +998,35 @@ class ProcessRuleTest(unittest.TestCase):
                  "fstring_argv", "computed_argv", "extra_args", "executable_kw", "shell_true",
                  "getattr_popen", "sys_modules", "asyncio_subprocess", "sign_literal", "two_calls",
                  "no_timeout")
+    #: r4 stubs (GROKCHAT round 3 bypasses and the new bans), each with the violation it must raise.
+    MUST_FAIL_R4 = {
+        "os_name_alias": "module_reference:os",
+        "rebind_subprocess": "rebind:subprocess",
+        "os_getattribute": "private_or_dunder_attr:__getattribute__",
+        "object_getattribute": "private_or_dunder_attr:__getattribute__",
+        "operator_attrgetter": "import_not_allowed:operator",
+        "timeit_exec": "import_not_allowed:timeit",
+        "cprofile_exec": "import_not_allowed:cProfile",
+        "type_lambda_os": "module_reference:os",
+        "return_os": "module_reference:os",
+        "webbrowser_browser": "import_not_allowed:webbrowser",
+        "imported_helper": "import_not_allowed:merge_lane_v5",
+        "path_hijack": "banned_attr:environ",
+        "partial_run": "import_not_allowed:functools",
+        "putenv": "module_attr:os.putenv",
+        "chmod": "module_attr:os.chmod",
+        "write_open": "write_mode_open",
+        "relative_ssh_keygen": "ssh_keygen_not_absolute",
+        "env_missing": "call_env_missing",
+        "env_computed": "call_env_not_constant",
+        "frame_globals": "banned_attr:f_globals",
+        "help_pager": "banned_name:help",
+        "private_module_attr": "module_attr:tempfile._os",
+        "nested_import": "nested_import",
+    }
+
+    def stub(self, name, folder="must_fail"):
+        return (PROCESS_FIXTURES / folder / (name + ".py")).read_text(encoding="utf-8")
 
     def test_safe_verify_stub_passes_the_rule(self):
         source = (PROCESS_FIXTURES / "safe_verify.py").read_text(encoding="utf-8")
@@ -828,22 +1034,34 @@ class ProcessRuleTest(unittest.TestCase):
 
     def test_must_fail_stubs_are_refused(self):
         found = sorted(p.stem for p in (PROCESS_FIXTURES / "must_fail").glob("*.py"))
-        self.assertEqual(found, sorted(self.MUST_FAIL))
+        self.assertEqual(found, sorted(set(self.MUST_FAIL) | set(self.MUST_FAIL_R4)))
         for name in self.MUST_FAIL:
-            source = (PROCESS_FIXTURES / "must_fail" / (name + ".py")).read_text(encoding="utf-8")
-            self.assertNotEqual(process_violations(source), [], name)
+            self.assertNotEqual(process_violations(self.stub(name)), [], name)
 
     def test_grokchat_split_string_and_popen_alias_stubs_are_refused(self):
-        split = (PROCESS_FIXTURES / "must_fail" / "split_string_sign.py").read_text(encoding="utf-8")
+        split = self.stub("split_string_sign")
         self.assertIn('"si" + "gn"', split)
         self.assertIn("process_calls:2", process_violations(split))
-        alias = (PROCESS_FIXTURES / "must_fail" / "popen_alias.py").read_text(encoding="utf-8")
+        alias = self.stub("popen_alias")
         self.assertIn("from_subprocess_import", process_violations(alias))
+
+    def test_round_three_bypass_stubs_are_refused_for_their_own_reason(self):
+        for name, code in self.MUST_FAIL_R4.items():
+            source = self.stub(name)
+            if name != "relative_ssh_keygen":
+                self.assertIn("/usr/bin/ssh-keygen", source, name)
+            self.assertIn(code, process_violations(source), name)
+
+    def test_every_r4_stub_differs_from_the_safe_stub_only_by_its_bypass(self):
+        safe = set((PROCESS_FIXTURES / "safe_verify.py").read_text(encoding="utf-8").splitlines())
+        for name in self.MUST_FAIL_R4:
+            extra = [line for line in self.stub(name).splitlines() if line not in safe]
+            self.assertTrue(extra, name)
+            self.assertLessEqual(len(extra), 12, (name, extra))
 
     def test_preauth_module_obeys_the_rule(self):
         self.assertTrue(MODULE.is_file(), "missing scripts/preauth.py")
         self.assertEqual(process_violations(MODULE.read_text(encoding="utf-8")), [])
-
 
 if __name__ == "__main__":
     unittest.main()
