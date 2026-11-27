@@ -21,6 +21,9 @@ Pinned `9691837` (package 0.1.17; launcher release 0.1.15) · https://github.com
 | Rails worker recorder + read-only replication (`/v1/rails/...`) | `hyvv/rails_emitter.py`, `hyvv/rails_export.py`, `hyvv/rails_log_source.py`, doc `hyvv/docs/rails.md` |
 | Vendored Rails runtime (subset, from bundlebees) | `hyvv/contrib/rizzstack_rails`, refreshed by `hyvv/scripts/vendor_rails.py` |
 | Brief / result schemas the launcher accepts | `hyvv/brief.schema.json`, `hyvv/result.schema.json`, example config `hyvv/config.example.json` |
+| `rizzstack.brief/1` validation (report-only; `brief_validation` on the attempt: valid / invalid / unversioned / unavailable, no values echoed) | `brief_validation` in `hyvv/launcher.py`, vendored validator `hyvv/hyvv/rizzstack_validators.py`, frozen schemas in `hyvv/schemas` |
+| Attempt journal (one JSON per attempt, per-attempt save lock, stale `lseq` writes refused) | `Launcher._save` in `hyvv/launcher.py` |
+| Deploy to the worker host (`apply-update`: build-sha proof, wheel-derived payload, pre-restart smoke, automatic revert) | `hyvv/scripts/launcher-admin.ps1`, `hyvv/scripts/deploy_payload.py` |
 | Install, start, doctor (Windows-first) | `hyvv/scripts` (`install.ps1`, `install.sh`, `start.ps1`, `doctor.ps1`, `contract-test.sh`) |
 | Deployment + pins | `hyvv/docs/DEPLOYMENT.md`, `hyvv/docs/STACK-PINS.md`, ADRs in `hyvv/docs/adr` |
 
@@ -32,12 +35,13 @@ Implemented in the launcher: `GET /v1/version`, `GET /v1/health`, `GET|POST /v1/
 
 ## CI gates
 
-`ci.yml`: `test` (pytest), `scan` (gitleaks), `windows-provisioning`, `bee-ci-*` shadows, aggregate `ci`. `release.yml` builds release assets (`hyvv/scripts/build_release_assets.py`). `slop-lint.yml` blocks new findings.
+`ci.yml`: `test` (pytest), `scan` (gitleaks), `windows-provisioning`, `bee-ci-*` shadows, aggregate `ci`, `lease-tamper` and the required aggregate `ci-gate`; `review-rerun.yml` re-runs a failed `lease-tamper` on a submitted review. The wheel test checks that every file under `schemas/` ships. `release.yml` builds release assets (`hyvv/scripts/build_release_assets.py`). `slop-lint.yml` blocks new findings.
 
 ## Change recipes
 
 - **Add a `/v1` route:** `hyvv/contract/v1/openapi.yaml` + a schema in `hyvv/contract/v1/schemas` + error codes, conformance tests under `hyvv/contract/v1/tests`, implement in `hyvv/contract/v1/reference.py` first, then in `make_handler` in `hyvv/launcher.py`, then update `hyvv/contract/v1/STATUS.json` and run `python -m contract.v1.status --write`. Additive only; a break is `/v2` served alongside for a release. Then update clients: `bundlebees/bundlebees_plugin/client.py`, `orbitdesktop/server/local-workers.mjs`.
 - **Add a model/provider route:** `model_spec` and config handling in `hyvv/launcher.py`, `hyvv/config.example.json`. Keys are read on the host only, never echoed.
+- **Deploy:** merge first, then the owner's typed yes, then one `apply-update <main sha>` through `hyvv/scripts/launcher-admin.ps1`. Success means the reported `+g<sha>` equals the target, the smoke passes (`brief_validation` of a valid probe is `valid`), and health is back. On failure it reverts by itself, so don't retry in a loop.
 - **Change what a bee may touch:** scope checks (`in_assigned_scope`) in `hyvv/launcher.py`; the coordinator-side lease is in bundlebees.
 
 ## Invariants

@@ -8,7 +8,9 @@ Things the code cannot tell you, usually expressed as an absence. Break one and 
 
 | Action | Who may do it |
 |---|---|
-| Merge a PR | an automated merge stream when CI is green **and** an independent review approves; otherwise the owner |
+| Merge a PR | the merge lane (`policy/merge-lane-v5.md`): a T1 slice with verify evidence at the head and no rejection; anything else needs green checks **and** an independent review at the exact head (owner attestation too on sensitive paths). Until go-live the coordinator merges by hand under the same rules, with `--match-head-commit` |
+| Approve a PR as an independent reviewer | a reviewer whose model family differs from every author family (`policy/outside-review.md`), or the owner in person. An agent never approves its own work, and an advisory lane's comment is never a review |
+| Change the gate, merge lane, `policy/**` or rulesets | owner + outside review; never under a pre-authorization |
 | Tag, release, deploy, restart a host or service, catalog PR, public post, upstream comment, form submit | only after the owner's **own typed yes** for that specific action; an agent relaying "the owner approved" does not count |
 | Spend paid compute, delete anything, cancel running workers, delete branches | owner's explicit yes |
 | Raise a `slop-baseline.json` | CODEOWNERS review by the owner (advisory) |
@@ -23,6 +25,8 @@ Unannounced work the owner has deferred (for example a rename) is not authorized
 - Worker tests run with no network and no coordinator credentials. A Cua sandbox is not a sandbox for the Hermes process.
 - A worker cannot widen its own assignment; leases are coordinator-written and immutable.
 - Self-reported worker results are claims, not evidence. A worker finishing, a verifier passing, and an owner accepting are three separate events.
+- A PR can't change the oracle that judges it: tests run with main's pytest config and lock (bundlebees), the gate is vendored from main, and its tier fails closed to T3 (unknown repo, unreadable history, missing tier line).
+- Reviews are trusted by text today, by login after `policy/identities.md`. Until then, only the owner and the outside reviewer post `APPROVE` lines.
 
 ## Secrets and private details
 

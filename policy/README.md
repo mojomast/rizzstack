@@ -13,4 +13,9 @@ To change a ruleset, update it in GitHub (a settings change that needs the owner
 
 Known gaps: no required reviewer (one maintainer); rizzstack's path-filtered `codemap` check isn't required (a path-filtered check never reports on unrelated PRs and would block them).
 
-See also `outside-review.md`: who may review a pull request, what a review bee receives, and how its verdict is validated and posted.
+## Other policy pages
+
+- `merge-lane-v5.md`: what merges, and on what evidence (slice/non-slice, risk tier T1/T3, the review format, carry-forward, the dry run and go-live).
+- `outside-review.md`: who may review a pull request, reviewer model routing, what a review bee receives, and how its verdict is validated and posted.
+- `identities.md`: the owner, coordinator and reviewer identities on GitHub, key custody, and the migration off the owner's token.
+- Planned: `preauth.md`, bounded pre-authorization envelopes the owner approves ahead of time (coordinator program, Phase 2).

@@ -6,6 +6,62 @@ failures is worthless.
 
 ---
 
+## 2026-11-27
+
+*Covers 2026-11-25 to 2026-11-27, America/Toronto. Pull request numbers are read from GitHub.*
+
+### Decided
+
+- **Merge-time risk tiers.** A slice merges without a review only when every changed path is on its
+  repository's T1 allowlist, verify evidence matches the head, and no rejection stands at the head.
+  Everything else needs an independent review (`policy/merge-lane-v5.md`).
+- **The outside reviewer is a role, not a person or a model.** Review bees fill it with the model
+  configured for the role (Kimi by default, DeepSeek Flash on the Nous route when Kimi wrote the
+  PR, the owner when neither is independent). Shadow calibration comes before any automatic
+  approval (`policy/outside-review.md`, `skills/rizzstack-outside-review/`).
+- **Three GitHub identities** (owner, coordinator app, reviewer app) replace text-trusted reviews.
+  Planned in `policy/identities.md`.
+
+### Landed
+
+- **Gate hardening.** The lease/tamper gate with review carry-forward and "newest decisive review
+  governs", risk tiers with a positive T1 allowlist and an always-T3 overlay (rizzstack
+  [#32](https://github.com/mojomast/rizzstack/pull/32), [#35](https://github.com/mojomast/rizzstack/pull/35),
+  [#38](https://github.com/mojomast/rizzstack/pull/38), [#39](https://github.com/mojomast/rizzstack/pull/39)),
+  the lane's T1 rule ([#37](https://github.com/mojomast/rizzstack/pull/37)), and the gate vendored
+  byte-identically into all six product repos. The bundlebees oracle lock
+  ([bundlebees #324](https://github.com/mojomast/bundlebees/pull/324), [#330](https://github.com/mojomast/bundlebees/pull/330),
+  [#331](https://github.com/mojomast/bundlebees/pull/331), [#335](https://github.com/mojomast/bundlebees/pull/335)) judges tests with main's config.
+  Gate-only reruns on review are in every repo.
+- **Wave work.** B4 landed in hyvv ([#101](https://github.com/mojomast/hyvv/pull/101), [#102](https://github.com/mojomast/hyvv/pull/102)),
+  with the `unavailable` status and value redaction in [#103](https://github.com/mojomast/hyvv/pull/103). C2-PKG ships every schema in the
+  wheel ([hyvv #96](https://github.com/mojomast/hyvv/pull/96)). B6 was re-frozen against current main (contract `da07129c`).
+- **Deploy path.** `apply-update` proves the build sha, deploys the wheel's runtime closure, smoke-tests
+  brief validation before restart, and reverts on failure ([hyvv #100](https://github.com/mojomast/hyvv/pull/100)).
+- **Ingest.** Content-addressed diagnostic keys end the `idempotency_conflict` loop
+  ([bundlebees #336](https://github.com/mojomast/bundlebees/pull/336)). The unit is green again.
+
+### Incidents
+
+- **Bypasses found in review, before merge:**
+  - a TOML inline table and `entry-points.pytest11` slipped past the line scanner
+  - a patch could rewrite the oracle config, because it was written into the worktree before `git apply`
+  - a root `pytest.py` replaced the test runner
+  - base-finding subtraction let a dangerous line be moved instead of added
+  - the symlink mode check refused every symlink
+
+  Each got a RED test. All 17 classes are in `skills/rizzstack-outside-review/references/bypass-catalogue.md`.
+- **Self-approval.** Two scheduled review lanes posted "independent review" approvals under the owner's
+  account, and one PR ([bundlebees #331](https://github.com/mojomast/bundlebees/pull/331)) merged on such an approval. Both lanes are now advisory
+  only. The merge is marked `self_approval` in the ledger, and its delta was reviewed afterwards.
+- **Merge box.** A green check from a review-triggered run does not replace a failed same-named check
+  from the `pull_request` run. Fixed by gate-only reruns, not by re-running full CI on reviews.
+- **Deploy reverted twice.** The launcher began reporting `0.1.19+g<sha>`, and the old exact version
+  check reverted two correct deploys. Fixed in hyvv #100. Restart time is growing quadratically with
+  the attempt count ([hyvv #106](https://github.com/mojomast/hyvv/issues/106)).
+
+---
+
 ## 2026-11-24
 
 *Dates in this log are America/Toronto. Counts are merged pull requests read from GitHub for that

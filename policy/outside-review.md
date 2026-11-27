@@ -17,29 +17,42 @@ GitHub.
   and claims, never the author's transcript.
 - **Advisory lanes are not reviewers.** Scheduled lanes that read PRs may comment findings. They
   never post a first line starting `APPROVE`, and nothing they write counts as a review.
-- **The owner is always a reviewer.** An owner approval (`APPROVE (owner) at <sha>`) needs no bee.
+- **The owner may review in person.** For the gate, a human review counts as independent
+  only with the independent form: `APPROVE (independent review — owner, human) at <sha>`.
+  `APPROVE (owner) at <sha>` is an **owner attestation**: the lane requires it on sensitive
+  paths, on top of the independent review. It never satisfies the non-slice review rule on its
+  own (`independent_review()` in the gate accepts only `approve_independent`).
 
-## Role configuration
+## Role configuration and routing
 
-The coordinator's config names the role. Values are examples:
+The coordinator's config names the role. The model aliases resolve through the launcher's
+`models` map like any other bee model, so changing a reviewer model is a config change:
 
 ```json
 {
   "roles": {
     "reviewer": {
-      "model": "<model alias in the launcher's models map>",
-      "model_family": "<family, e.g. deepseek>",
+      "models": [
+        {"model": "<kimi alias, e.g. k3.1-pro>", "model_family": "kimi"},
+        {"model": "<deepseek alias, e.g. nous:deepseek-v4.1-flash-1017>", "model_family": "deepseek"}
+      ],
       "kind": "opencode",
       "budget": {"timeout_s": 2700, "max_tool_calls": 120},
       "identity": "rizzstack-reviewer",
-      "post_mode": "confirm"
+      "post_mode": "auto_reject"
     }
   }
 }
 ```
 
-The model alias resolves through the launcher's `models` map like any other bee model, so changing
-the reviewer's model is a config change, not a code change.
+Routing is per PR, from the **author families** recorded for every commit on it:
+
+- bee commits → the model recorded on the attempt; coordinator commits → the coordinator's
+  model; anything else (another agent, a human, unknown) → `unknown`;
+- the reviewer is the first listed model whose family appears in **no** author family (with the
+  list above: Kimi by default, DeepSeek when Kimi wrote any part of the PR);
+- if no listed family qualifies (both families authored, or an author is `unknown`), no review
+  bee is dispatched: the PR goes to the owner or an outside reviewer (`review_not_independent`).
 
 ## Dispatch
 
@@ -94,9 +107,13 @@ Whatever the mode, the owner confirms approvals on PRs that touch the gate or me
 (`apply-update`, `deploy_payload.py`, `launcher-admin.ps1`, `start.ps1`), `.rizzstack/**`
 (leases and contracts), or `policy/**`.
 
-`auto` requires the reviewer to post under its own GitHub identity (below). While reviews are
-posted from the owner's account, the gate can only trust their **text**, and `post_mode` must
-stay `confirm` or `auto_reject`.
+`auto` needs two things first: the reviewer posts under its own GitHub identity
+(`policy/identities.md`), with the gate trusting that login, and **shadow calibration** is
+complete. In shadow calibration, review bees review the same heads as the owner or outside
+reviewer without posting, until ≥10 PRs (≥3 of them `gate_security` or `deploy_path`) show
+zero missed blocking findings and at most 20% false blocks. The owner decides the promotion.
+While reviews are posted from the owner's account, the gate can only trust their **text**, so
+`post_mode` must stay `confirm` or `auto_reject`.
 
 ## Recording
 
@@ -116,6 +133,6 @@ verdict posted after the owner's yes.
    read-only security profile for review bees.
 3. Verdict validator and poster (bundlebees): schema validation, rendering, `post_mode`, and the
    campaign record line.
-4. Reviewer identity: a dedicated GitHub App for `rizzstack-reviewer`. The gate then accepts
-   `approve_independent` only from that app's login (or the owner's), instead of trusting the text.
+4. Reviewer identity: the `rizzstack-reviewer` GitHub App (`policy/identities.md`). The gate then
+   accepts `approve_independent` only from that app's login or the owner's, instead of trusting the text.
 5. Move `verdict.schema.json` to workflow `schemas/` as the canonical `rizzstack.review-verdict/1`.
