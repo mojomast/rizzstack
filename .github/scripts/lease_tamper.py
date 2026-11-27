@@ -2119,6 +2119,20 @@ def _tier_repo_name(repo, environ=None):
     return _tier_normalise(repo).rstrip("/").rsplit("/", 1)[-1].lower()
 
 
+#: Paths that are never T1, even inside a repository allowlist.  A verifier
+#: that decides whether work is accepted is review material wherever it lives;
+#: the allowlist answers "product surface", not "safe to auto-merge".
+TIER_ALWAYS_THREE = (
+    "hyvv/ticket_verify.py",
+)
+
+
+def _tier_always_three(path):
+    """True when one changed path is on the always-T3 list."""
+    normal = _tier_normalise(path).lower()
+    return any(fnmatch.fnmatchcase(normal, pattern) for pattern in TIER_ALWAYS_THREE)
+
+
 def _tier_allowlist(repo_name):
     """Every allowlist entry the repository resolves to, or ``None`` if unknown."""
     name = str(repo_name or "").strip().lower()
@@ -2448,6 +2462,8 @@ def risk_tier(repo, base, head, repo_name=None, environ=None):
         for status, path in _tier_diff(repo, merge_base, head):
             for reason in _tier_path_reasons(repo, merge_base, head, status, path):
                 add(reason, path)
+            if _tier_always_three(path):
+                add("always_t3", path)
             if not _tier_allowlisted(path, status, allowlist):
                 add("not_t1_allowlisted", path)
         for path, content in _tier_added_lines(repo, merge_base, head):

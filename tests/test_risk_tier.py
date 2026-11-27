@@ -475,6 +475,21 @@ class TierRules(unittest.TestCase):
             changes={"codemap/README.md": "# map v2\n"},
         )
 
+    def test_hyvv_ticket_verify_is_always_t3(self):
+        self.assert_t3(
+            "always_t3",
+            repo_name="hyvv",
+            base_files={"hyvv/ticket_verify.py": "# verifier\n", "hyvv/other.py": "# other\n"},
+            changes={"hyvv/ticket_verify.py": "# verifier v2\n"},
+        )
+
+    def test_another_hyvv_file_is_still_t1(self):
+        self.assert_t1(
+            repo_name="hyvv",
+            base_files={"hyvv/other.py": "# other\n"},
+            changes={"hyvv/other.py": "# other v2\n"},
+        )
+
     def test_unreadable_history_is_t3(self):
         root = tempfile.mkdtemp(prefix="tier-broken-")
         repo, _base, head = build_change(root, changes={"src/slice.py": "new\n"})
