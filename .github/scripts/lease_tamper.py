@@ -2057,7 +2057,6 @@ TIER_T1_ALLOWLIST = {
     "rizzstack": (
         _allow("codemap/**"),
         _allow("compat/**"),
-        _allow("scripts/codemap/**"),
         _allow("NEWS.md"),
         _allow("NEXT.md"),
     ),
