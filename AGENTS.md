@@ -9,7 +9,7 @@ This repo holds docs, install profiles, the protocol map and the **code map** fo
 3. Crossing repos: `codemap/contracts.md` (seams), `codemap/change-recipes.md` (what to touch, in order), `codemap/architecture.md` (flows).
 4. Looking for a symbol: `codemap/generated/<repo>.md` (ranked), or query `codemap/generated/<repo>.json` (files, symbols with `path:line`, edges, HTTP paths, env var names, CI jobs, schema ids). Don't read the JSON whole.
 5. Before any risky action: `codemap/invariants.md`.
-6. Reviewing a pull request as the outside reviewer (any agent, any model): `skills/rizzstack-outside-review/SKILL.md`; the coordinator's side (dispatch, validation, posting) is `policy/outside-review.md`.
+6. Reviewing a pull request as the outside reviewer (any agent, any model): `skills/rizzstack-outside-review/SKILL.md`; the coordinator's side (dispatch, validation, posting) is `policy/outside-review.md`; who may act as whom on GitHub is `policy/identities.md`.
 
 Paths in the map are written `repo/path` and resolve at the SHAs pinned in `scripts/codemap/sources.json`. Check the pin against the live repo before trusting line numbers.
 
