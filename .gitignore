@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 # machine-local private-name patterns for codemap --verify-docs (never commit)
 scripts/codemap/private-names.local
+# GitHub App setup output (tools/github-apps): never commit keys, records or state files
+*.pem
+out-*/
+*.state.json
