@@ -1,0 +1,354 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "Envelope fields: schema rizzstack.preauth/2 and id, issuer, issued_at, expires_at, nonce, action_class, repos, bases, contracts, review, budget, conditions, max_uses, created_from; the JSON schema and the checker require exactly these (additionalProperties false).",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_schema_requires_the_envelope_fields",
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_schema_matches_the_checker"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "A malformed envelope (missing or extra field, duplicate key, non-object) refuses envelope_schema_invalid before any other check.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_schema_invalid_envelope_refuses_before_anything_else"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "A correctly signed, in-date, unrevoked envelope authorizes exactly the listed contract and returns its envelope_id, contract_sha256 and max_tier.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_valid_signed_envelope_authorizes_one_listed_contract"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "The signature is verified with ssh-keygen -Y verify against policy/allowed_signers, identity = envelope issuer, namespace rizzstack-preauth, over the exact committed bytes; tampered bytes, a key not in allowed_signers, another namespace, a garbage signature or an issuer that is not the signing principal refuse envelope_bad_signature.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_tampered_envelope_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_foreign_key_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_wrong_namespace_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_garbage_signature_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_issuer_must_be_the_signing_principal"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "now >= expires_at refuses envelope_expired.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_expired_envelope_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "statement": "now < issued_at refuses envelope_not_yet_valid.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_not_yet_valid_envelope_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-007",
+      "statement": "expires_at more than 7 days after issued_at refuses envelope_ttl_exceeded, even if signed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_longer_than_seven_days_refuses",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_states_the_seven_day_ceiling"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-008",
+      "statement": "An envelope id in the measured revocation list refuses envelope_revoked, effective immediately; revocation needs no signature.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_revoked_envelope_refuses_immediately"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-009",
+      "statement": "A repository not in repos refuses envelope_repo_mismatch.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_wrong_repository_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-010",
+      "statement": "The current base must descend from bases[repo] (caller-provided is_ancestor); false or no ancestry fact refuses envelope_base_mismatch.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_base_that_does_not_descend_from_the_signed_base_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-011",
+      "statement": "A contract_sha256 not listed for this repo refuses envelope_contract_not_listed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_contract_not_listed_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-012",
+      "statement": "Never-pre-authorizable action classes (gate/lane, rulesets, deploy, force-push, preauth widening) refuse envelope_action_forbidden; the policy names every never-pre-authorizable class.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_forbidden_action_class_refuses",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_names_every_never_preauthorizable_class"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-013",
+      "statement": "A re-freeze (contracts[].refreeze_of) is allowed only when the oracle files are identical at the old and new source_rev; product code may differ.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_with_an_identical_oracle_is_allowed"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-014",
+      "statement": "Changing, adding or removing any frozen test, conftest, pytest config (pytest.ini, tox.ini, setup.cfg, pyproject.toml), fixture/data file, tests/plugins hook, sitecustomize/usercustomize or .pth refuses envelope_oracle_changed; oracle_paths defines that set.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_changes_any_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_adds_or_removes_an_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_oracle_paths_cover_tests_conftest_config_fixtures_and_hooks"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-015",
+      "statement": "A re-freeze without a measured oracle fact refuses envelope_oracle_unproven.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_without_measured_oracle_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-016",
+      "statement": "Measured uses of the envelope >= min(max_uses, budget.max_merges) refuse envelope_budget_exhausted.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_exhausted_merge_budget_refuses",
+        "tests/test_preauth_envelope.py::BudgetTest::test_max_uses_is_a_ceiling_too"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-017",
+      "statement": "A second use of the same envelope for the same contract refuses envelope_replayed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_replayed_use_of_the_same_contract_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-018",
+      "statement": "A nonce already recorded for a different envelope id refuses envelope_nonce_reused.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_nonce_reused_by_another_envelope_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-019",
+      "statement": "Key custody: scripts/preauth.py only verifies (no sign/mint/generate function, no ssh-keygen -Y sign, no private key text); NAMESPACE and MAX_TTL_SECONDS are constants.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_module_verifies_and_never_signs"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-020",
+      "statement": "policy/allowed_signers exists and every entry is a public ssh-ed25519 or sk-ssh-ed25519 key restricted to namespaces=\"rizzstack-preauth\"; no tracked file contains an OpenSSH private key. An empty (comments only) file is valid and refuses every envelope.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_allowed_signers_holds_public_keys_only_and_is_namespace_bound"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-021",
+      "statement": "policy/preauth.md states signed approval (ssh-keygen -Y sign, rizzstack-preauth, policy/allowed_signers, key never on the Hermes host), revoke preauth <id> effective immediately, and that agents never create, widen or extend envelopes.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_signed_approval_and_immediate_revocation"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-022",
+      "statement": "policy/preauth.md proposes P1-P5 with their mechanical conditions, requires proving every condition from data, a ledger and a daily digest.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_proposes_the_five_initial_envelopes",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_mechanical_conditions_and_a_daily_digest"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-023",
+      "statement": "P1 is the first numbered condition and requires frozen test blobs, conftest, pytest config and fixtures identical at the old and new source_rev.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_rejects_a_refreeze_that_changes_frozen_test_blobs",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_is_a_numbered_condition_covering_conftest_and_fixtures"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "ssh-keygen with -Y (OpenSSH >= 8.2) is present on the box and on GitHub-hosted runners; the checker refuses envelope_bad_signature if it is missing.",
+    "Facts (revocations, consumed uses, nonces, oracle blob maps, ancestry) are measured by the caller from GitHub and git; this slice only decides from them.",
+    "tests/test_preauth_policy.py is r3's file with one test re-cut (hash approval -> signed approval) and FIELDS extended; the other seven r3 tests are unchanged.",
+    "policy/allowed_signers ships with comments only; the owner adds a public key in a separate owner-approved change."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes",
+      "committing any private key",
+      "adding a key to policy/allowed_signers"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "preauth-envelope",
+  "interfaces": [
+    {
+      "change": "add",
+      "kind": "module",
+      "name": "scripts/preauth.py"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "check"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "load_envelope"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "verify_signature"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "oracle_paths"
+    },
+    {
+      "change": "add",
+      "kind": "exception",
+      "name": "PreauthRefused"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "NAMESPACE"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "MAX_TTL_SECONDS"
+    },
+    {
+      "change": "add",
+      "kind": "constant",
+      "name": "REQUIRED_FIELDS"
+    },
+    {
+      "change": "add",
+      "kind": "file",
+      "name": "policy/allowed_signers"
+    }
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "check() returns ok only for a valid, in-date, unrevoked, listed, in-budget, first use",
+      "named refusals: envelope_schema_invalid, envelope_bad_signature, envelope_expired, envelope_not_yet_valid, envelope_ttl_exceeded, envelope_revoked, envelope_action_forbidden, envelope_repo_mismatch, envelope_base_mismatch, envelope_contract_not_listed, envelope_oracle_unproven, envelope_oracle_changed, envelope_budget_exhausted, envelope_replayed, envelope_nonce_reused",
+      "the module verifies and never signs"
+    ],
+    "summary": "Re-cut of preauth-policy r3 (c05c62c7) with the r2 checker folded in. The owner signs one bounded envelope with ssh-keygen -Y sign -n rizzstack-preauth on their own machine; the repository holds only public keys in policy/allowed_signers, and the coordinator never holds a signing key. scripts/preauth.py (stdlib plus ssh-keygen) verifies the signature over the committed bytes and decides one use from measured facts, refusing with a named reason on any doubt. Wiring the checker into the gate/lane is out of scope (authority slice)."
+  },
+  "review": {
+    "approved_at": null,
+    "approved_by": null,
+    "contract_sha256": "1a3d79af2b66857d02d1c981dc321fdcc2747e93094d12986da5b245bbe4e5d7",
+    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
+    "status": "draft"
+  },
+  "risk": {
+    "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
+    "reasons": [
+      "authorization and crypto verification surface"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/preauth.py",
+      "policy/preauth.md",
+      "policy/README.md",
+      "policy/allowed_signers",
+      "schemas/preauth.schema.json"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/**",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      "policy/rulesets/**"
+    ],
+    "test_files": [
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py"
+    ]
+  },
+  "source_rev": "434f500aca3a10da074462b8e99df240982ba400",
+  "supersedes": [
+    "preauth-policy r3 (c05c62c7)"
+  ],
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Owner-signed pre-authorization envelopes with a fail-closed checker",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_envelope.py tests/test_preauth_policy.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
