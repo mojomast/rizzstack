@@ -26,6 +26,7 @@ Run: python3 -m pytest -q -p no:cacheprovider tests/test_gate_authority.py
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -629,16 +630,32 @@ class ReviewRerunTest(unittest.TestCase):
         self.assertIn("repos/mojomast/rizzstack/actions/jobs/55/rerun", posts)
 
 
-# --------------------------------------------------------------- the lane's gate-authority check
-GATE_CHECK_PROVEN = {"name": "gate-authority", "status": "completed", "conclusion": "success",
-                     "head": HEAD, "completed_at": "2026-11-27T22:10:00Z", "app": "github-actions",
-                     "workflow": {"event": "pull_request_target",
-                                  "path": ".github/workflows/gate-authority.yml"}}
+# --------------------------------------------------------------- the lane's gate-authority run
+# A pull_request_target run reports its check on the BASE tip (GITHUB_SHA is the base branch's
+# last commit), so the real gate never appears among the PR head's check runs.  The lane finds
+# the gate through its workflow run instead.  GitHub's own required check is not the authority
+# (it is pinned only to the Actions app, so a same-named job satisfies it); the lane is, until
+# the owner adds a required-workflow ruleset rule.
+REPO = "mojomast/rizzstack"
+GATE_WORKFLOW_PATH = ".github/workflows/gate-authority.yml"
+REVIEW_AT = "2026-11-27T22:00:00Z"
 
 
-def _lane_facts(checks, required=("ci-gate", "gate-authority"), files=("docs/readme.md",), reviews=None):
+def _gate_run(**overrides):
+    run = {"id": 9001, "run_number": 41, "run_attempt": 1, "workflow_id": 77, "name": "gate-authority",
+           "path": GATE_WORKFLOW_PATH, "event": "pull_request_target", "head_sha": BASE,
+           "head_branch": HEAD_BRANCH, "status": "completed", "conclusion": "success",
+           "created_at": "2026-11-27T22:05:00Z", "run_started_at": "2026-11-27T22:05:00Z",
+           "check_suite_id": 502, "pull_requests": [{"number": 12, "head": {"sha": HEAD}, "base": {"sha": BASE}}],
+           "repository": {"full_name": REPO}, "head_repository": {"full_name": REPO},
+           "actor": {"login": "someone"}, "triggering_actor": {"login": "someone"}}
+    run.update(overrides)
+    return run
+
+
+def _lane_facts(checks, required=("ci-gate",), files=("docs/readme.md",), reviews=None):
     return {
-        "pr": {"state": "OPEN", "is_draft": False, "mergeable": True,
+        "pr": {"number": 12, "state": "OPEN", "is_draft": False, "mergeable": True,
                "merge_state_status": "CLEAN", "head": HEAD, "files": list(files)},
         "class": LANE.NON_SLICE,
         "reviews": reviews if reviews is not None else [
@@ -653,86 +670,170 @@ def _lane_facts(checks, required=("ci-gate", "gate-authority"), files=("docs/rea
     }
 
 
-class GateAuthorityCheckTest(unittest.TestCase):
-    def verdict(self, *checks, **kwargs):
-        return LANE.decide(_lane_facts(checks, **kwargs))
+class _FakeLaneApi:
+    """GitHub-shaped REST for one open PR (#12 at HEAD on BASE)."""
 
-    def test_proven_gate_authority_run_counts(self):
-        self.assertTrue(self.verdict(GATE_CHECK_PROVEN)["merge"])
-
-    def test_same_named_job_from_a_pull_request_workflow_does_not_count(self):
-        spoof = dict(GATE_CHECK_PROVEN, workflow={"event": "pull_request",
-                                                  "path": ".github/workflows/gate-authority.yml"})
-        self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven")
-
-    def test_same_named_job_from_another_workflow_file_does_not_count(self):
-        spoof = dict(GATE_CHECK_PROVEN, workflow={"event": "pull_request_target",
-                                                  "path": ".github/workflows/spoof.yml"})
-        self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven")
-
-    def test_commit_status_or_other_app_does_not_count(self):
-        for spoof in (dict(GATE_CHECK_PROVEN, app="some-app"),
-                      {k: v for k, v in GATE_CHECK_PROVEN.items() if k not in ("app", "workflow")},
-                      dict(GATE_CHECK_PROVEN, workflow=None)):
-            self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven", spoof)
-
-    def test_an_unproven_same_named_check_beside_a_proven_one_refuses(self):
-        spoof = dict(GATE_CHECK_PROVEN, completed_at="2026-11-27T22:11:00Z",
-                     workflow={"event": "pull_request", "path": ".github/workflows/x.yml"})
-        self.assertEqual(self.verdict(GATE_CHECK_PROVEN, spoof)["reason"], "gate_authority_unproven")
-
-    def test_lane_collects_app_and_workflow_provenance_for_check_runs(self):
-        api = _FakeLaneApi()
-        api.check_runs = [
+    def __init__(self, case):
+        self.check_runs = [
             {"name": "ci-gate", "status": "completed", "conclusion": "success", "head_sha": HEAD,
              "completed_at": "2026-11-27T22:09:00Z", "app": {"slug": "github-actions"},
-             "check_suite": {"id": 501}},
-            {"name": "gate-authority", "status": "completed", "conclusion": "success", "head_sha": HEAD,
-             "completed_at": "2026-11-27T22:10:00Z", "app": {"slug": "github-actions"},
-             "check_suite": {"id": 502}},
-        ]
-        api.suite_runs = {"502": [{"id": 9001, "event": "pull_request_target",
-                                   "path": ".github/workflows/gate-authority.yml"}]}
-        facts = LANE.collect_facts("mojomast/rizzstack", 12, ".", "test-token", api_url="https://api.test",
-                                   http=api, gate_record={"ran": True, "ok": True, "reason": "gate_ok",
-                                                          "head": HEAD, "output_tail": "lease-tamper: class=non-slice\n"},
-                                   verify_dir=Path(tempfile.mkdtemp()), plan_path=api.plan,
-                                   required_checks=("ci-gate", "gate-authority"))
-        gate = [c for c in facts["checks"] if c["name"] == "gate-authority"]
-        self.assertEqual(len(gate), 1)
-        self.assertEqual(gate[0]["app"], "github-actions")
-        self.assertEqual(gate[0]["workflow"], {"event": "pull_request_target",
-                                               "path": ".github/workflows/gate-authority.yml"})
-
-
-class _FakeLaneApi:
-    def __init__(self):
-        self.check_runs = []
-        self.suite_runs = {}
+             "check_suite": {"id": 501}}]
+        self.workflow_runs = []
+        self.suite_apps = {}
+        self.reviews = [{"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
+                         "submitted_at": REVIEW_AT}]
         tmp = Path(tempfile.mkdtemp(prefix="lane-api-"))
+        case.addCleanup(shutil.rmtree, tmp, True)
+        self.tmp = tmp
         self.plan = tmp / "plan.json"
         self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
+        self.paths = []
+
+    def add_run(self, run, app="github-actions"):
+        self.workflow_runs.append(run)
+        self.suite_apps[str(run.get("check_suite_id"))] = app
 
     def __call__(self, url, token):
         parsed = urllib.parse.urlparse(url)
         path, query = parsed.path, dict(urllib.parse.parse_qsl(parsed.query))
+        self.paths.append(path)
         if re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/\d+", path):
             return {"number": 12, "state": "open", "draft": False, "mergeable": True,
-                    "mergeable_state": "clean", "head": {"sha": HEAD, "ref": "feat/x"},
-                    "base": {"ref": "main", "sha": BASE}, "labels": []}, ""
+                    "mergeable_state": "clean", "head": {"sha": HEAD, "ref": HEAD_BRANCH,
+                                                         "repo": {"full_name": REPO}},
+                    "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}}, "labels": []}, ""
         if path.endswith("/reviews"):
-            return [{"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
-                     "submitted_at": "2026-11-27T22:00:00Z"}], ""
+            return list(self.reviews), ""
         if path.endswith("/files"):
             return [{"filename": "docs/readme.md"}], ""
         if path.endswith("/check-runs"):
-            return {"check_runs": self.check_runs}, ""
-        if path.endswith("/actions/runs") and "check_suite_id" in query:
-            runs = self.suite_runs.get(query["check_suite_id"], [])
+            self.assertion_head(path)
+            return {"total_count": len(self.check_runs), "check_runs": self.check_runs}, ""
+        if (re.fullmatch(r"/repos/[^/]+/[^/]+/actions/workflows/gate-authority\.yml/runs", path)
+                or re.fullmatch(r"/repos/[^/]+/[^/]+/actions/runs", path)):
+            runs = list(self.workflow_runs)
+            if "check_suite_id" in query:
+                runs = [r for r in runs if str(r.get("check_suite_id")) == query["check_suite_id"]]
             return {"total_count": len(runs), "workflow_runs": runs}, ""
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/check-suites/(\d+)", path)
+        if match:
+            app = self.suite_apps.get(match.group(1))
+            if app is None:
+                raise AssertionError("unknown check suite " + match.group(1))
+            return {"id": int(match.group(1)), "app": {"slug": app}, "head_sha": BASE}, ""
         if "/compare/" in path:
             return {"status": "ahead", "files": []}, ""
         raise AssertionError("unexpected REST path: " + path)
+
+    @staticmethod
+    def assertion_head(path):
+        # check runs are only ever read for the PR head
+        if not path.endswith("/commits/%s/check-runs" % HEAD):
+            raise AssertionError("check runs read for something other than the PR head: " + path)
+
+
+class GateAuthorityRunTest(unittest.TestCase):
+    """The lane locates the gate through its pull_request_target workflow run, never a head check."""
+
+    def facts(self, api, required=("ci-gate", "gate-authority"), with_workflow=True):
+        repo = Path(tempfile.mkdtemp(prefix="lane-base-"))
+        self.addCleanup(shutil.rmtree, repo, True)
+        if with_workflow:
+            (repo / ".github" / "workflows").mkdir(parents=True)
+            (repo / GATE_WORKFLOW_PATH).write_text("name: gate-authority\n", encoding="utf-8")
+        verify = Path(tempfile.mkdtemp(prefix="lane-verify-"))
+        self.addCleanup(shutil.rmtree, verify, True)
+        return LANE.collect_facts(REPO, 12, str(repo), "test-token", api_url="https://api.test",
+                                  http=api, gate_record={"ran": True, "ok": True, "reason": "gate_ok",
+                                                         "head": HEAD,
+                                                         "output_tail": "lease-tamper: class=non-slice\n"},
+                                  verify_dir=verify, plan_path=api.plan, required_checks=required)
+
+    def verdict(self, *runs, app="github-actions", head_checks=(), reviews=None, **kwargs):
+        api = _FakeLaneApi(self)
+        for run in runs:
+            api.add_run(run, app)
+        api.check_runs.extend(head_checks)
+        if reviews is not None:
+            api.reviews = reviews
+        return LANE.decide(self.facts(api, **kwargs))
+
+    def assert_refused(self, reason, *runs, **kwargs):
+        verdict = self.verdict(*runs, **kwargs)
+        self.assertFalse(verdict["merge"], (runs, verdict))
+        self.assertEqual(verdict["reason"], reason, runs)
+
+    def test_proven_gate_run_for_the_exact_head_merges_without_a_head_check(self):
+        verdict = self.verdict(_gate_run())
+        self.assertTrue(verdict["merge"], verdict)
+
+    def test_lane_reads_the_gate_from_workflow_runs_not_head_check_runs(self):
+        api = _FakeLaneApi(self)
+        api.add_run(_gate_run())
+        self.facts(api)
+        self.assertTrue(any(p.endswith("/actions/workflows/gate-authority.yml/runs")
+                            or p.endswith("/actions/runs") for p in api.paths), api.paths)
+        self.assertIn("/repos/%s/check-suites/502" % REPO, api.paths)
+
+    def test_a_same_named_check_on_the_head_commit_refuses(self):
+        spoof = {"name": "gate-authority", "status": "completed", "conclusion": "success", "head_sha": HEAD,
+                 "completed_at": "2026-11-27T22:10:00Z", "app": {"slug": "github-actions"},
+                 "check_suite": {"id": 777}}
+        self.assert_refused("gate_authority_unproven", _gate_run(), head_checks=[spoof])
+        self.assert_refused("gate_authority_unproven", head_checks=[spoof])
+
+    def test_runs_from_another_workflow_event_app_or_repository_do_not_count(self):
+        fork = {"full_name": "someone/rizzstack"}
+        for spoof in (_gate_run(path=".github/workflows/spoof.yml"),
+                      _gate_run(path=".github/workflows/gate-authority.yml.bak"),
+                      _gate_run(event="pull_request"),
+                      _gate_run(event="workflow_dispatch"),
+                      _gate_run(head_repository=fork),
+                      _gate_run(repository=fork),
+                      _gate_run(head_repository=None)):
+            self.assert_refused("gate_authority_unproven", spoof)
+        self.assert_refused("gate_authority_unproven", _gate_run(), app="some-app")
+
+    def test_run_for_another_pull_request_or_another_head_does_not_count(self):
+        for spoof in (_gate_run(pull_requests=[{"number": 13, "head": {"sha": HEAD}}]),
+                      _gate_run(pull_requests=[{"number": 12, "head": {"sha": "2" * 40}}]),
+                      _gate_run(pull_requests=[]),
+                      _gate_run(pull_requests=None),
+                      _gate_run(head_sha=HEAD, pull_requests=[])):
+            self.assert_refused("gate_authority_unproven", spoof)
+
+    def test_the_newest_run_for_the_pull_request_decides(self):
+        older = _gate_run()
+        pushed = _gate_run(id=9010, run_number=42, check_suite_id=503, created_at="2026-11-27T22:20:00Z",
+                           run_started_at="2026-11-27T22:20:00Z",
+                           pull_requests=[{"number": 12, "head": {"sha": "3" * 40}}])
+        # a newer run judged another head (a push after this one): the older green run is stale
+        self.assert_refused("gate_authority_unproven", older, pushed)
+        for state in ({"status": "in_progress", "conclusion": None}, {"conclusion": "failure"},
+                      {"conclusion": "neutral"}, {"conclusion": "skipped"}, {"conclusion": "cancelled"}):
+            newer = _gate_run(id=9011, run_number=43, check_suite_id=504, created_at="2026-11-27T22:30:00Z",
+                              run_started_at="2026-11-27T22:30:00Z", **state)
+            self.assert_refused("gate_authority_not_green", older, newer)
+            self.assert_refused("gate_authority_not_green", _gate_run(**state))
+
+    def test_run_must_start_after_the_newest_decisive_review(self):
+        late = [{"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
+                 "submitted_at": "2026-11-27T21:00:00Z"},
+                {"state": "COMMENTED", "commit_id": HEAD, "body": "one question",
+                 "user": {"login": "someone-else"}, "submitted_at": "2026-11-27T22:06:00Z"},
+                {"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
+                 "submitted_at": "2026-11-27T22:07:00Z"}]
+        self.assert_refused("gate_authority_stale", _gate_run(), reviews=late)
+        rerun = _gate_run(run_attempt=2, run_started_at="2026-11-27T22:08:00Z")
+        self.assertTrue(self.verdict(rerun, reviews=late)["merge"])
+        for bad in (None, "", "yesterday", "2026-11-27 22:08:00"):
+            self.assert_refused("gate_authority_stale", _gate_run(run_started_at=bad))
+
+    def test_gate_is_demanded_whenever_the_base_carries_the_gate_workflow(self):
+        self.assert_refused("gate_authority_unproven", required=("ci-gate",))
+        self.assert_refused("gate_authority_unproven", required=("ci-gate", "gate-authority"),
+                            with_workflow=False)
+        self.assertTrue(self.verdict(required=("ci-gate",), with_workflow=False)["merge"])
 
 
 # --------------------------------------------------------------- owner attestation identity
@@ -849,6 +950,7 @@ class T1AllowlistTest(unittest.TestCase):
     def tier(self, changes, repo_name="orbitdesktop", symlinks=(), modes=None, modes_only=None,
              gitlinks=()):
         root = tempfile.mkdtemp(prefix="gate-authority-")
+        self.addCleanup(shutil.rmtree, root, True)
         repo = GitRepo(root)
         for path, text in BASE_FILES.items():
             repo.write(path, text)
@@ -964,6 +1066,42 @@ class T1AllowlistTest(unittest.TestCase):
                    if case.kind == "tier" and case.expect_tier == "T3"]
         for reason in NEW_T3_REASONS:
             self.assertTrue(any(r.startswith(reason + ":") for r in reasons), reason)
+
+
+# --------------------------------------------------------------- gate drill lock is append-only
+DRILL_LOCK = ROOT / ".github" / "scripts" / "gate_drill.lock.json"
+DRILL_LOCK_AT_MAIN = ROOT / "tests" / "fixtures" / "gate_drill.lock.main.json"
+DRILL_LOCK_AT_MAIN_SHA256 = "560c4509dc49163ca9bf6b7a9bd205590bc3d099302b6df3c1d35873a4fc98fe"
+
+
+def _entry_bytes(entry):
+    return json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+class GateDrillLockAppendOnlyTest(unittest.TestCase):
+    """Every drill case pinned at main stays byte-identical: new cases may be added, none weakened."""
+
+    def main_lock(self):
+        data = DRILL_LOCK_AT_MAIN.read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), DRILL_LOCK_AT_MAIN_SHA256)
+        return json.loads(data)
+
+    def test_lock_entries_present_at_main_stay_byte_identical(self):
+        main = self.main_lock()
+        lock = json.loads(DRILL_LOCK.read_text(encoding="utf-8"))
+        self.assertEqual(lock.get("version"), main["version"])
+        self.assertGreaterEqual(len(main["cases"]), 1)
+        for cid, entry in main["cases"].items():
+            self.assertIn(cid, lock["cases"], "drill case %s was removed" % cid)
+            self.assertEqual(_entry_bytes(lock["cases"][cid]), _entry_bytes(entry), cid)
+
+    def test_drill_declarations_present_at_main_are_unchanged(self):
+        main = self.main_lock()
+        drill = _load(DRILL_SCRIPT, "gate_drill_append_only_under_test")
+        declared = drill.expected_lock()["cases"]
+        for cid, entry in main["cases"].items():
+            self.assertIn(cid, declared, "drill case %s is no longer declared" % cid)
+            self.assertEqual(_entry_bytes(declared[cid]), _entry_bytes(entry), cid)
 
 
 if __name__ == "__main__":

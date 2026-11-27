@@ -1426,7 +1426,7 @@ class FetchFactsTests(unittest.TestCase):
             "ran": True, "ok": True, "reason": "gate_ok", "head": HEAD,
             "output_tail": "lease-tamper: class=non-slice\n",
         })
-        repo = overrides.pop("repo_path", ".")
+        repo = overrides.pop("repo_path", self.tmp.name)
         return lane.collect_facts(
             "mojomast/workflow", 7, repo, "test-token",
             api_url="https://api.test", http=self.api, gate_record=gate,
