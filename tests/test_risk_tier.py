@@ -468,6 +468,20 @@ class TierRules(unittest.TestCase):
             changes={"hyvv/ticket_verify.py": "# verifier v2\n"},
         )
 
+    def test_auth_token_and_signature_modules_are_always_t3(self):
+        for name in ("hyvv/auth_gate.py", "hyvv/token_store.py", "hyvv/signature.py", "hyvv/verify_keys.py"):
+            self.assert_t3("always_t3", repo_name="hyvv",
+                           base_files={name: "# m\n"}, changes={name: "# m2\n"})
+
+    def test_design_and_plain_modules_stay_t1(self):
+        self.assert_t1(repo_name="hyvv", base_files={"hyvv/design.py": "# d\n"},
+                       changes={"hyvv/design.py": "# d2\n"})
+
+    def test_a_new_test_file_named_verify_is_still_t1(self):
+        self.assert_t1(repo_name="hyvv",
+                       base_files={"hyvv/other.py": "# o\n"},
+                       changes={"tests/test_verify_keys.py": "def test_x():\n    pass\n"})
+
     def test_another_hyvv_file_is_still_t1(self):
         self.assert_t1(
             repo_name="hyvv",
