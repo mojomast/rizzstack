@@ -473,9 +473,14 @@ class TierRules(unittest.TestCase):
             self.assert_t3("always_t3", repo_name="hyvv",
                            base_files={name: "# m\n"}, changes={name: "# m2\n"})
 
-    def test_design_and_plain_modules_stay_t1(self):
-        self.assert_t1(repo_name="hyvv", base_files={"hyvv/design.py": "# d\n"},
-                       changes={"hyvv/design.py": "# d2\n"})
+    def test_plain_modules_stay_t1(self):
+        self.assert_t1(repo_name="hyvv", base_files={"hyvv/utils.py": "# u\n"},
+                       changes={"hyvv/utils.py": "# u2\n"})
+
+    def test_js_and_ts_auth_modules_are_always_t3(self):
+        for name in ("hyvv/auth.ts", "hyvv/token.tsx", "hyvv/sign.mjs", "hyvv/verify.js"):
+            self.assert_t3("always_t3", repo_name="hyvv",
+                           base_files={name: "// m\n"}, changes={name: "// m2\n"})
 
     def test_a_new_test_file_named_verify_is_still_t1(self):
         self.assert_t1(repo_name="hyvv",

@@ -2125,23 +2125,26 @@ def _tier_repo_name(repo, environ=None):
 #: the allowlist answers "product surface", not "safe to auto-merge".
 TIER_ALWAYS_THREE = (
     "hyvv/ticket_verify.py",
-    "**/*auth*.py",
-    "**/*token*.py",
-    "**/*crypt*.py",
-    "**/*signature*.py",
-    "**/*verify*.py",
+    "**/*auth*",
+    "**/*token*",
+    "**/*crypt*",
+    "**/*sign*",
+    "**/*verify*",
 )
 
 
 def _tier_always_three(path):
-    """True when one changed path is on the always-T3 list.
+    """True when one changed path is an auth/token/crypt/sign/verify module.
 
-    New test files stay T1: a fixture named ``test_verify_*.py`` is test
-    surface, not an auth/token/verify module.
+    The stems match Python and JS/TS modules; a documentation or image file that
+    happens to carry the token is not code. New test files stay T1: a fixture
+    named ``test_verify_*.py`` is test surface, not a verifier.
     """
     if _tier_is_test_path(path):
         return False
     normal = _tier_normalise(path).lower()
+    if not normal.endswith((".py", ".pyi", ".ts", ".tsx", ".js", ".mjs")):
+        return False
     return any(fnmatch.fnmatchcase(normal, pattern) for pattern in TIER_ALWAYS_THREE)
 
 
