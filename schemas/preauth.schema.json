@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pre-authorization envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "action_class",
+    "conditions",
+    "max_uses",
+    "expires_at",
+    "created_from"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique, immutable envelope identifier."
+    },
+    "action_class": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The single pre-authorizable action class permitted by this envelope."
+    },
+    "conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "fact",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable condition identifier."
+          },
+          "fact": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Authoritative fact that the executor must measure."
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "object",
+              "array",
+              "null"
+            ],
+            "description": "Expected JSON value; the measured fact must equal this value."
+          }
+        }
+      }
+    },
+    "max_uses": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Absolute RFC 3339 expiry, no more than seven days after creation."
+    },
+    "created_from": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Immutable provenance reference for the approved proposal."
+    }
+  }
+}
