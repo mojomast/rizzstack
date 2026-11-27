@@ -81,7 +81,7 @@ def owner_approve(head=HEAD, state="COMMENTED", body=None):
     }
 
 
-def gate_record(ok=True, ran=True, reason=None):
+def gate_record(ok=True, ran=True, reason=None, tail=""):
     return {
         "ran": ran,
         "ok": ok,
@@ -91,7 +91,7 @@ def gate_record(ok=True, ran=True, reason=None):
         "base": "d" * 40,
         "head": HEAD,
         "exit_code": 0 if ok else 1,
-        "output_tail": "",
+        "output_tail": tail,
     }
 
 
@@ -427,6 +427,57 @@ class SliceTests(unittest.TestCase):
         verdict = lane.decide(value)
         self.assertFalse(verdict["merge"])
         self.assertEqual(verdict["reason"], "review_missing")
+
+    def test_slice_t1_with_valid_verify_merges_without_review(self):
+        value = facts(
+            reviews=[],
+            lease_tamper=gate_record(tail="lease-tamper: class=slice TIER=T1"),
+        )
+        value["class"] = lane.SLICE
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
+        verdict = lane.decide(value)
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertEqual(verdict["reason"], "t1_verified")
+        self.assertEqual(verdict["tier"], "T1")
+        self.assertIsNone(verdict["review"])
+
+    def test_slice_t3_still_needs_the_review(self):
+        value = facts(
+            reviews=[],
+            lease_tamper=gate_record(tail="lease-tamper: class=slice TIER=T3"),
+        )
+        value["class"] = lane.SLICE
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_a_missing_tier_is_t3(self):
+        value = facts(
+            reviews=[],
+            lease_tamper=gate_record(tail="lease-tamper: class=slice"),
+        )
+        value["class"] = lane.SLICE
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [verify()], "compare": {}}
+        verdict = lane.decide(value)
+        self.assertEqual(verdict["reason"], "review_missing")
+        self.assertEqual(verdict["tier"], "T3")
+
+    def test_non_slice_t1_still_needs_the_review(self):
+        value = facts(
+            reviews=[],
+            lease_tamper=gate_record(tail="lease-tamper: class=non-slice TIER=T1"),
+        )
+        self.assertEqual(lane.decide(value)["reason"], "review_missing")
+
+    def test_slice_t1_without_verify_refuses(self):
+        value = facts(
+            reviews=[],
+            lease_tamper=gate_record(tail="lease-tamper: class=slice TIER=T1"),
+        )
+        value["class"] = lane.SLICE
+        value["verify"] = {"provenance": dict(PROVENANCE), "records": [], "compare": {}}
+        verdict = lane.decide(value)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "verify_evidence_missing")
 
     def test_a_valid_record_from_another_repo_at_a_blob_equal_sha_is_refused(self):
         value = facts()

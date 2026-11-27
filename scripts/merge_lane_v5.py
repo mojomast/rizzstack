@@ -1666,6 +1666,7 @@ def decide(facts, ancestor=None):
         "lease_tamper": None,
         "review": None,
         "owner_review": None,
+        "tier": None,
     }
 
     def refuse(reason):
@@ -1705,16 +1706,22 @@ def decide(facts, ancestor=None):
     pull_class = facts.get("class")
     if pull_class not in (SLICE, NON_SLICE):
         return refuse("class_unknown")
+    tier = tier_from_gate(gate)
+    if tier not in ("T1", "T3"):
+        tier = "T3"  # a missing or unreadable tier is never trusted for auto-merge
+    verdict["tier"] = tier
+    auto_t1 = pull_class == SLICE and tier == "T1"
 
     ok, reason = checks_state(facts.get("checks") or [], head, facts.get("required_checks"))
     if not ok:
         return refuse(reason)
 
     carry = facts.get("review_carry")
-    review, review_match, review_reason = review_acceptance(reviews, head, carry, ancestor)
-    if review is None:
-        return refuse(review_reason)
-    verdict["review"] = review_match
+    if not auto_t1:
+        review, review_match, review_reason = review_acceptance(reviews, head, carry, ancestor)
+        if review is None:
+            return refuse(review_reason)
+        verdict["review"] = review_match
 
     sensitive = sensitive_paths(files)
     verdict["sensitive_files"] = sensitive
@@ -1742,7 +1749,7 @@ def decide(facts, ancestor=None):
         verdict["verify"] = match
 
     verdict["merge"] = True
-    verdict["reason"] = "reviewed"
+    verdict["reason"] = "t1_verified" if auto_t1 else "reviewed"
     return verdict
 
 
