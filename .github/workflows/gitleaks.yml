@@ -108,13 +108,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Lease/tamper gate unit tests
-        run: python3 -m unittest tests.test_lease_tamper -v
-      - name: Lease/tamper bypass regression (all five cases must fail closed)
-        run: python3 .github/scripts/lease_tamper_poc.py --expect fail-closed
-      - name: Lease/tamper adversarial reproduction v2 (13 cases must fail closed)
         run: |
-          bash .github/scripts/lease_tamper_poc_v2.sh .github/scripts/lease_tamper.py | tee "$RUNNER_TEMP/lease_tamper_poc_v2.txt"
-          grep -q '^13 cases, 0 unexpected$' "$RUNNER_TEMP/lease_tamper_poc_v2.txt"
+          python3 -m unittest tests.test_lease_tamper -v
+          python3 -m unittest tests.test_risk_tier -v
+      - name: Gate drill corpus (all bypasses + risk tiers, lock-verified)
+        # One CI entry point for the whole adversarial corpus: the five v1
+        # bypasses, the thirteen v2 real-slice-path cases and the risk-tier
+        # cases (including both pyproject inline-table shapes). The case lock
+        # makes a new bypass without a case, and a case weakened without the
+        # lock, a hard failure. Replaces the two separate PoC steps; the PoC
+        # scripts stay in the tree as reproductions and as the source of the v1
+        # builders and the v2 labels the drill is checked against.
+        run: python3 .github/scripts/gate_drill.py --script .github/scripts/lease_tamper.py --lock .github/scripts/gate_drill.lock.json
       - name: Enforce the slice lease and frozen tests
         env:
           GITHUB_TOKEN: ${{ github.token }}

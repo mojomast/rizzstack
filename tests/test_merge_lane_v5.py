@@ -1612,5 +1612,47 @@ class MergeExecutionTests(unittest.TestCase):
         self.assertEqual(record["reason"], "merge_unverified")
 
 
+class GateClassLineTests(unittest.TestCase):
+    """The lane reads the class (and tier) from the gate's final line only."""
+
+    def record(self, *lines):
+        return {"ran": True, "ok": True, "exit_code": 0, "output_tail": "\n".join(lines)}
+
+    def test_old_gate_line_without_a_tier_still_parses(self):
+        record = self.record("lease-tamper: OK: clean", "lease-tamper: class=slice")
+        self.assertEqual(lane.class_from_gate(record), lane.SLICE)
+        self.assertIsNone(lane.tier_from_gate(record))
+
+    def test_tier_is_read_next_to_the_class(self):
+        record = self.record("lease-tamper: OK: clean", "lease-tamper: class=slice TIER=T1")
+        self.assertEqual(lane.class_from_gate(record), lane.SLICE)
+        self.assertEqual(lane.tier_from_gate(record), "T1")
+
+    def test_non_slice_tier_three(self):
+        record = self.record("lease-tamper: class=non-slice TIER=T3")
+        self.assertEqual(lane.class_from_gate(record), lane.NON_SLICE)
+        self.assertEqual(lane.tier_from_gate(record), "T3")
+
+    def test_the_last_anchored_line_governs(self):
+        record = self.record(
+            "lease-tamper: class=non-slice TIER=T3",
+            "lease-tamper: OK: a path named class=non-slice earlier",
+            "lease-tamper: class=slice TIER=T1",
+        )
+        self.assertEqual(lane.class_from_gate(record), lane.SLICE)
+        self.assertEqual(lane.tier_from_gate(record), "T1")
+
+    def test_a_lookalike_line_is_not_the_class(self):
+        for line in (
+            "lease-tamper: class=slice TIER=T1 extra",
+            "prefix lease-tamper: class=slice TIER=T1",
+            "lease-tamper: class=unknown TIER=T1",
+            "lease-tamper: class=slice TIER=T2",
+        ):
+            record = self.record(line)
+            self.assertIsNone(lane.class_from_gate(record), line)
+            self.assertIsNone(lane.tier_from_gate(record), line)
+
+
 if __name__ == "__main__":
     unittest.main()
