@@ -1717,8 +1717,14 @@ def decide(facts, ancestor=None):
         return refuse(reason)
 
     carry = facts.get("review_carry")
-    if not auto_t1:
-        review, review_match, review_reason = review_acceptance(reviews, head, carry, ancestor)
+    review, review_match, review_reason = review_acceptance(reviews, head, carry, ancestor)
+    if auto_t1:
+        # A T1 slice needs no approval, but a rejection is still decisive.
+        if review is None and review_reason == "review_changes_requested":
+            return refuse(review_reason)
+        if review is not None:
+            verdict["review"] = review_match
+    else:
         if review is None:
             return refuse(review_reason)
         verdict["review"] = review_match
