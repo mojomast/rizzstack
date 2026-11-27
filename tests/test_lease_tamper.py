@@ -24,7 +24,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 #: sha256 of the shared policy block and the shared fixtures.  Both repositories
 #: that vendor this gate (workflow and hyvv) and the merge lane (rizzstack)
 #: assert the same values, so the copies cannot drift silently.
-SHARED_POLICY_SHA256 = "f749821a6170379743a7e440edcb0d90141de8d04bf22ef9a3b6d28a78b83ec8"
+# The pinned hash of the shared gate/lane policy block lives in one fixture both suites read.
+SHARED_POLICY_SHA256 = (Path(__file__).resolve().parent / "fixtures" / "shared_policy.sha256").read_text(
+    encoding="ascii").strip()
+REVIEWER_LOGIN = "rizzstack-reviewer[bot]"
 REVIEW_LINES_SHA256 = "ac2de684dd22fceed5aa2f18ac6d7d6f8c101c0fd67a619d2a2c6a663642311b"
 CARRY_FIXTURES_SHA256 = "33435d738b84742c8e2b5cfa3e153cf20921fb7a1985f808bbde68603941165e"
 SHARED_BLOCK_BEGIN = "# --- BEGIN SHARED GATE POLICY"
@@ -1557,7 +1560,10 @@ class FakeGitHubApi:
     def _pull(self, parts):
         if len(parts) == 6 and parts[5] == "reviews":
             number = int(parts[4])
-            return 200, self.reviews.get(number, [])
+            # Reviews are submitted by the reviewer app unless a case names another user:
+            # the gate accepts an independent approval only from that login.
+            return 200, [dict({"user": {"login": REVIEWER_LOGIN}}, **review)
+                         for review in self.reviews.get(number, [])]
         number = int(parts[4]) if len(parts) == 5 else 0
         if number in self.pulls:
             return 200, self.pulls[number]
