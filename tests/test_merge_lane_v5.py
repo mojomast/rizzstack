@@ -76,7 +76,7 @@ def owner_approve(head=HEAD, state="COMMENTED", body=None):
     return {
         "state": state,
         "commit_id": head,
-        "author": "owner",
+        "author": "mojomast",
         "body": body
         if body is not None
         else "APPROVE (owner) at %s\n\nOne-time owner decision." % head,
@@ -1222,7 +1222,7 @@ class SharedPolicyContractTests(unittest.TestCase):
             self.assertEqual(lane.parse_review_line(body)[0], kind, body)
 
     def test_owner_body_never_satisfies_the_independent_rule(self):
-        review = {"state": "APPROVED", "commit_id": HEAD,
+        review = {"state": "APPROVED", "commit_id": HEAD, "author": "mojomast",
                   "body": "APPROVE (owner) at %s" % HEAD}
         self.assertEqual(lane.review_form(review)[0], lane.REVIEW_APPROVE_OWNER)
         self.assertFalse(lane.review_is_approval(review, lane.REVIEW_APPROVE_INDEPENDENT))

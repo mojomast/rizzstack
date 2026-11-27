@@ -8,7 +8,13 @@ whatever account posted it.
 
 The gate GitHub runs must be the base branch's copy: a ``pull_request_target``
 workflow checks out the base commit, fetches the pull request head as git objects
-only, and runs nothing from the pull request.
+only, and runs nothing from the pull request.  The workflow is parsed by a strict
+YAML-subset reader and compared with the one allowed structure; must-fail fixtures
+(including the demonstrated pwn request) are refused.  A review re-runs that base
+gate, and the lane counts a ``gate-authority`` check only from that workflow's
+``pull_request_target`` run, never from a same-named job or a commit status.
+
+An owner attestation (``APPROVE (owner)``) counts only from the owner login.
 
 The T1 allowlist keeps auth, CI, subprocess, network, dependency, test-infra and gate
 surfaces out of T1; a file kind the gate does not know is T3.
@@ -21,17 +27,25 @@ Run: python3 -m pytest -q -p no:cacheprovider tests/test_gate_authority.py
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE_SCRIPT = ROOT / ".github" / "scripts" / "lease_tamper.py"
 LANE_SCRIPT = ROOT / "scripts" / "merge_lane_v5.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "gate-authority.yml"
+RERUN_WORKFLOW = ROOT / ".github" / "workflows" / "review-rerun.yml"
+WORKFLOW_FIXTURES = ROOT / "tests" / "fixtures" / "workflows"
+DRILL_SCRIPT = ROOT / ".github" / "scripts" / "gate_drill.py"
+NEW_T3_REASONS = ("capability_subprocess", "capability_network", "dependency_manifest", "test_infra",
+                  "ci_config", "auth_surface", "unknown_kind")
 
 HEAD = "1a1d032f98691fb4121d5b9673b36562c77a5627"
 BASE = "316087f7da8ea01a206b4c6417c2a1599e84b35c"
@@ -140,55 +154,657 @@ class StaleBaseTest(unittest.TestCase):
         self.assertNotIn("BEHIND", LANE.MERGE_STATES)
 
 
-# --------------------------------------------------------------- base-pinned gate
+# --------------------------------------------------------------- strict YAML subset
+class StrictYamlError(ValueError):
+    pass
+
+
+_YAML_FORBIDDEN_START = ("&", "*", "!", "{", "?", "%", "@", "`", "|+", ">", "<<")
+
+
+def _yaml_scalar(text, where):
+    text = text.strip()
+    if not text:
+        return None
+    if text.startswith(_YAML_FORBIDDEN_START) or text in ("---", "..."):
+        raise StrictYamlError("%s: unsupported YAML construct %r" % (where, text))
+    if text.startswith("["):
+        if not text.endswith("]"):
+            raise StrictYamlError("%s: unterminated flow sequence" % where)
+        inner = text[1:-1].strip()
+        if not inner:
+            return []
+        if any(c in inner for c in "[]{}&*!"):
+            raise StrictYamlError("%s: nested flow collection" % where)
+        return [_yaml_scalar(part, where) for part in inner.split(",")]
+    if text[0] in "\"'":
+        quote = text[0]
+        if len(text) < 2 or text[-1] != quote:
+            raise StrictYamlError("%s: unterminated quoted scalar" % where)
+        body = text[1:-1]
+        if quote == "'":
+            if "'" in body.replace("''", ""):
+                raise StrictYamlError("%s: bad single-quoted scalar" % where)
+            return body.replace("''", "'")
+        if "\\" in body or '"' in body:
+            raise StrictYamlError("%s: escapes are not supported" % where)
+        return body
+    if text in ("true", "false"):
+        return text == "true"
+    if text in ("null", "~", "yes", "no", "on", "off", "True", "False", "Yes", "No", "On", "Off"):
+        raise StrictYamlError("%s: ambiguous YAML scalar %r" % (where, text))
+    if text.isdigit():
+        return int(text)
+    if ": " in text or text.endswith(":") or " #" in text:
+        raise StrictYamlError("%s: ambiguous plain scalar %r" % (where, text))
+    return text
+
+
+def _yaml_strip_comment(line):
+    if line.lstrip().startswith("#"):
+        return ""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] == " "):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def strict_yaml(text):
+    """Parse the block-style YAML subset GitHub workflows here are written in.
+
+    Anything outside the subset (flow mappings, anchors, aliases, tags, merge keys,
+    folded or keep-chomp scalars, tabs, duplicate keys, multiple documents, YAML 1.1
+    booleans) is refused, so a workflow cannot hide structure from this parser.
+    """
+    if "\t" in text:
+        raise StrictYamlError("tabs are not allowed")
+    raw = text.splitlines()
+
+    def next_content(index):
+        while index < len(raw):
+            stripped = _yaml_strip_comment(raw[index])
+            if stripped.strip():
+                return index, len(stripped) - len(stripped.lstrip(" ")), stripped.strip()
+            index += 1
+        return index, -1, None
+
+    def block_scalar(index, parent_indent, chomp):
+        out = []
+        body_indent = None
+        while index < len(raw):
+            line = raw[index]
+            if line.strip():
+                ind = len(line) - len(line.lstrip(" "))
+                if ind <= parent_indent:
+                    break
+                if body_indent is None:
+                    body_indent = ind
+                if ind < body_indent:
+                    raise StrictYamlError("line %d: block scalar dedent" % (index + 1))
+                out.append(line[body_indent:])
+            else:
+                out.append("")
+            index += 1
+        while out and out[-1] == "":
+            out.pop()
+        value = "\n".join(out)
+        if chomp == "|":
+            value += "\n"
+        return value, index
+
+    def parse_value_after_colon(rest, index, indent, where):
+        rest = rest.strip()
+        if rest in ("|", "|-"):
+            return block_scalar(index + 1, indent, rest)
+        if rest == "":
+            nxt, ind, content = next_content(index + 1)
+            if content is None or ind <= indent and not (ind == indent and content.startswith("- ")):
+                raise StrictYamlError("%s: empty value" % where)
+            return parse_block(nxt, ind)
+        return _yaml_scalar(rest, where), index + 1
+
+    def split_key(content, where):
+        if content.startswith(("\"", "'")):
+            raise StrictYamlError("%s: quoted keys are not supported" % where)
+        if ":" not in content:
+            raise StrictYamlError("%s: expected 'key: value'" % where)
+        key, rest = content.split(":", 1)
+        if rest and not rest.startswith(" "):
+            raise StrictYamlError("%s: expected 'key: value'" % where)
+        key = key.strip()
+        if not key or key.startswith(_YAML_FORBIDDEN_START) or " " in key:
+            raise StrictYamlError("%s: bad key %r" % (where, key))
+        return key, rest
+
+    def parse_mapping(index, indent, first=None):
+        out = {}
+        while True:
+            index, ind, content = next_content(index)
+            if content is None or ind < indent:
+                return out, index
+            if ind > indent:
+                raise StrictYamlError("line %d: unexpected indent" % (index + 1))
+            if content.startswith("- "):
+                return out, index
+            where = "line %d" % (index + 1)
+            key, rest = split_key(content, where)
+            if key in out:
+                raise StrictYamlError("%s: duplicate key %r" % (where, key))
+            out[key], index = parse_value_after_colon(rest, index, indent, where)
+
+    def parse_sequence(index, indent):
+        out = []
+        while True:
+            index, ind, content = next_content(index)
+            if content is None or ind < indent:
+                return out, index
+            if ind > indent or not (content.startswith("- ") or content == "-"):
+                if ind == indent:
+                    return out, index
+                raise StrictYamlError("line %d: unexpected indent in sequence" % (index + 1))
+            where = "line %d" % (index + 1)
+            item = content[2:] if content.startswith("- ") else ""
+            item_indent = ind + 2
+            if not item.strip():
+                raise StrictYamlError("%s: empty sequence item" % where)
+            head = _yaml_strip_comment(item)
+            if ":" in head and not head.strip().startswith(("\"", "'", "[")) and (
+                    head.rstrip().endswith(":") or ": " in head):
+                # A mapping item: re-read this line as the first key at item_indent.
+                raw[index] = " " * item_indent + item
+                value, index = parse_mapping(index, item_indent)
+                out.append(value)
+            else:
+                out.append(_yaml_scalar(head, where))
+                index += 1
+
+    def parse_block(index, indent):
+        index, ind, content = next_content(index)
+        if content is None:
+            raise StrictYamlError("empty block")
+        if content.startswith("- ") or content == "-":
+            return parse_sequence(index, ind)
+        return parse_mapping(index, ind)
+
+    start, ind, content = next_content(0)
+    if content is None:
+        raise StrictYamlError("empty document")
+    if ind != 0:
+        raise StrictYamlError("document must start at column 0")
+    doc, end = parse_mapping(start, 0)
+    end, _, rest = next_content(end)
+    if rest is not None:
+        raise StrictYamlError("line %d: trailing content" % (end + 1))
+    return doc
+
+
+def yaml_cross_check(text, doc):
+    """When PyYAML is installed, it must read the same document (YAML 1.1 'on' -> True)."""
+    try:
+        import yaml  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    def norm(value):
+        if isinstance(value, dict):
+            return {("on" if k is True else k): norm(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [norm(v) for v in value]
+        return value
+
+    return norm(yaml.safe_load(text)) == doc
+
+
+# --------------------------------------------------------------- base-pinned gate workflow
+GATE_EVENT_TYPES = {"opened", "synchronize", "reopened", "edited", "ready_for_review"}
+CHECKOUT_RE = re.compile(r"actions/checkout@[0-9a-f]{40}")
+BASE_REF = "${{ github.event.pull_request.base.sha }}"
+PR_NUMBER = "${{ github.event.pull_request.number }}"
+TOKEN = "${{ github.token }}"
+FETCH_RUN = re.compile(r'git fetch --no-tags( --depth=[1-9][0-9]{0,3})? origin "refs/pull/\$\{PR_NUMBER\}/head"\n?')
+JUDGE_RUN = re.compile(r"python3 \.github/scripts/lease_tamper\.py\n?")
+FORBIDDEN_KEYS = {"working-directory", "shell", "defaults", "container", "services",
+                  "continue-on-error", "strategy", "outputs", "if", "needs", "secrets"}
+FORBIDDEN_TEXT = ("GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "secrets.", "ACTIONS_")
+
+
+def _walk(value, path=""):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield path + "/" + str(key), key, item
+            yield from _walk(item, path + "/" + str(key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk(item, "%s[%d]" % (path, index))
+
+
+def gate_workflow_violations(text):
+    """Every way ``text`` differs from the one allowed base-pinned gate workflow ([] = allowed)."""
+    try:
+        doc = strict_yaml(text)
+    except StrictYamlError as exc:
+        return ["unparseable: %s" % exc]
+    if yaml_cross_check(text, doc) is False:
+        return ["yaml_divergence"]
+    bad = []
+    for where, key, item in _walk(doc):
+        if key in FORBIDDEN_KEYS:
+            bad.append("forbidden_key %s" % where)
+        if isinstance(item, str) and any(word in item for word in FORBIDDEN_TEXT):
+            bad.append("forbidden_text %s" % where)
+        if key == "run" and isinstance(item, str) and "${{" in item:
+            bad.append("expression_in_run %s" % where)
+        if key == "permissions" and where != "/permissions":
+            bad.append("job_permissions %s" % where)
+    if set(doc) != {"name", "on", "permissions", "jobs"}:
+        bad.append("top_level_keys %s" % sorted(doc))
+    if doc.get("name") != "gate-authority":
+        bad.append("workflow_name")
+    on = doc.get("on")
+    if not (isinstance(on, dict) and set(on) == {"pull_request_target"}
+            and isinstance(on["pull_request_target"], dict)
+            and set(on["pull_request_target"]) == {"types"}
+            and isinstance(on["pull_request_target"]["types"], list)
+            and on["pull_request_target"]["types"]
+            and set(on["pull_request_target"]["types"]) <= GATE_EVENT_TYPES):
+        bad.append("trigger_not_pull_request_target_only")
+    if doc.get("permissions") != {"contents": "read"}:
+        bad.append("permissions_not_contents_read")
+    jobs = doc.get("jobs")
+    if not (isinstance(jobs, dict) and set(jobs) == {"gate-authority"}):
+        return bad + ["jobs_not_exactly_gate_authority"]
+    job = jobs["gate-authority"]
+    if not isinstance(job, dict):
+        return bad + ["job_not_a_mapping"]
+    if set(job) != {"name", "runs-on", "timeout-minutes", "steps"}:
+        bad.append("job_keys %s" % sorted(job))
+    if job.get("name") != "gate-authority":
+        bad.append("job_name")
+    if not (isinstance(job.get("runs-on"), str) and re.fullmatch(r"ubuntu-[0-9.]+", job["runs-on"])):
+        bad.append("runs_on")
+    if not (type(job.get("timeout-minutes")) is int and 1 <= job["timeout-minutes"] <= 30):
+        bad.append("timeout")
+    steps = job.get("steps")
+    if not (isinstance(steps, list) and len(steps) == 3 and all(isinstance(s, dict) for s in steps)):
+        return bad + ["steps_not_exactly_checkout_fetch_judge"]
+    checkout, fetch, judge = steps
+    if (set(checkout) != {"name", "uses", "with"}
+            or not (isinstance(checkout["uses"], str) and CHECKOUT_RE.fullmatch(checkout["uses"]))
+            or checkout["with"] != {"ref": BASE_REF, "persist-credentials": False}):
+        bad.append("checkout_not_pinned_base_without_credentials")
+    if (set(fetch) != {"name", "env", "run"} or fetch["env"] != {"PR_NUMBER": PR_NUMBER}
+            or not (isinstance(fetch["run"], str) and FETCH_RUN.fullmatch(fetch["run"]))):
+        bad.append("fetch_step_not_allowlisted")
+    if (set(judge) != {"name", "env", "run"} or judge["env"] not in ({"GH_TOKEN": TOKEN}, {"GITHUB_TOKEN": TOKEN})
+            or not (isinstance(judge["run"], str) and JUDGE_RUN.fullmatch(judge["run"]))):
+        bad.append("judge_step_not_allowlisted")
+    return bad
+
+
 class BasePinnedGateWorkflowTest(unittest.TestCase):
     def text(self):
         self.assertTrue(WORKFLOW.is_file(), "missing .github/workflows/gate-authority.yml")
         return WORKFLOW.read_text(encoding="utf-8")
 
-    def test_runs_on_pull_request_target_only(self):
-        text = self.text()
-        on_block = re.search(r"(?ms)^on:\s*\n(.*?)(?=^\S)", text)
-        self.assertIsNotNone(on_block, "no top-level on: block")
-        events = re.findall(r"(?m)^  ([a-z_]+):", on_block.group(1))
-        self.assertEqual(events, ["pull_request_target"])
-        self.assertRegex(text, r"(?m)^  gate-authority:\s*$")
-        self.assertRegex(text, r"(?m)^    name: gate-authority\s*$")
+    def test_workflow_is_exactly_the_base_pinned_gate(self):
+        self.assertEqual(gate_workflow_violations(self.text()), [])
 
-    def test_every_checkout_is_the_base_commit_without_credentials(self):
+    def test_workflow_parses_strictly_and_agrees_with_pyyaml(self):
         text = self.text()
-        checkouts = re.findall(r"(?ms)uses:\s*actions/checkout@[0-9a-f]{40}.*?(?=\n      - |\Z)", text)
-        self.assertTrue(checkouts, "no pinned actions/checkout step")
-        for block in checkouts:
-            self.assertRegex(block, r"ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}")
-            self.assertRegex(block, r"persist-credentials:\s*false")
-        self.assertNotRegex(text, r"ref:\s*\$\{\{\s*github\.event\.pull_request\.head")
-        self.assertNotIn("refs/pull/${{ github.event.pull_request.number }}/merge", text)
+        doc = strict_yaml(text)
+        self.assertIn(yaml_cross_check(text, doc), (True, None))
 
-    def test_pull_request_code_is_fetched_as_objects_and_never_run(self):
-        text = self.text()
-        self.assertRegex(text, r"git fetch [^\n]*refs/pull/\$\{\{\s*github\.event\.pull_request\.number\s*\}\}/head")
-        runs = re.findall(r"(?m)^\s+run:\s*(.*)$", text)
-        commands = " ".join(runs) + " " + " ".join(re.findall(r"(?ms)run:\s*\|\n(.*?)(?=\n\s*-\s|\Z)", text))
-        for forbidden in ("pip install", "npm ", "pytest", "make ", "unittest", "bash ./", "sh ./",
-                          "git checkout", "git switch", "git worktree", "source "):
-            self.assertNotIn(forbidden, commands, forbidden)
-        self.assertIn("python3 .github/scripts/lease_tamper.py", commands)
-        self.assertNotIn("secrets.", text)
-        # Attacker-controlled strings never reach a shell (script injection).
-        for untrusted in ("pull_request.title", "pull_request.body", "head.ref", "head.label",
-                          "head_ref", "github.event.review"):
-            self.assertNotIn(untrusted, text, untrusted)
+    def test_must_fail_workflows_are_refused(self):
+        fixtures = sorted(WORKFLOW_FIXTURES.glob("*.yml"))
+        self.assertGreaterEqual(len(fixtures), 14)
+        for fixture in fixtures:
+            self.assertNotEqual(gate_workflow_violations(fixture.read_text(encoding="utf-8")), [],
+                                fixture.name)
 
-    def test_token_is_read_only(self):
-        text = self.text()
-        perms = re.findall(r"(?m)^\s+([a-z-]+):\s*(read|write|none)\s*$", text)
-        self.assertTrue(perms)
-        self.assertFalse([p for p in perms if p[1] == "write"], perms)
-        self.assertNotRegex(text, r"permissions:\s*write-all")
+    def test_grokchat_pwn_request_is_refused(self):
+        bad = gate_workflow_violations((WORKFLOW_FIXTURES / "pwn_request.yml").read_text(encoding="utf-8"))
+        self.assertTrue(bad and bad[0].startswith("unparseable"), bad)  # flow-style permissions
+        bad = gate_workflow_violations(
+            (WORKFLOW_FIXTURES / "pwn_request_block_permissions.yml").read_text(encoding="utf-8"))
+        self.assertTrue(any(item.startswith("job_permissions") for item in bad), bad)
+        self.assertTrue(any(item.startswith("expression_in_run") for item in bad), bad)
+        self.assertIn("steps_not_exactly_checkout_fetch_judge", bad)
+
+    def test_strict_parser_refuses_constructs_that_hide_structure(self):
+        for text in ("a: {b: c}\n", "a: &x 1\nb: *x\n", "a: !tag 1\n", "a: 1\na: 2\n",
+                     "a:\n\tb: 1\n", "on: yes\n", "a: >\n  folded\n", "---\na: 1\n",
+                     "a: \"esc\\u0041\"\n", "<<: {}\n"):
+            with self.assertRaises(StrictYamlError, msg=repr(text)):
+                strict_yaml(text)
 
     def test_gate_judges_pull_request_target_like_a_pull_request(self):
         self.assertIn("pull_request_target", GATE.PULL_REQUEST_EVENTS)
+
+
+# --------------------------------------------------------------- re-judge after a review
+FAKE_GH = r'''#!/usr/bin/env python3
+"""A fake `gh api` serving canned workflow runs, filtered the way GitHub filters them."""
+import json, os, sys, urllib.parse
+state = json.load(open(os.environ["FAKE_GH_STATE"]))
+args = sys.argv[1:]
+assert args and args[0] == "api", args
+args = args[1:]
+method, slurp, path = "GET", False, None
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in ("-X", "--method"):
+        method = args[i + 1]; i += 2; continue
+    if a == "--slurp":
+        slurp = True
+    elif a == "--paginate":
+        pass
+    elif a.startswith("-"):
+        raise SystemExit("fake gh: unsupported flag " + a)
+    else:
+        path = a
+    i += 1
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(json.dumps([method, path]) + "\n")
+url = urllib.parse.urlparse(path)
+query = dict(urllib.parse.parse_qsl(url.query))
+parts = url.path.strip("/").split("/")
+if method != "GET":
+    print("{}"); raise SystemExit(0)
+def runs(items):
+    for key in ("event", "head_sha", "status", "branch"):
+        if key in query:
+            field = "head_branch" if key == "branch" else key
+            items = [r for r in items if r.get(field) == query[key] or (key == "status" and r.get("conclusion") == query[key])]
+    return {"total_count": len(items), "workflow_runs": items}
+if parts[-2:] == ["actions", "runs"] or parts[-1] == "runs" and "workflows" in parts:
+    items = state["runs"]
+    if "workflows" in parts:
+        wf = parts[parts.index("workflows") + 1]
+        items = [r for r in items if r["path"].endswith("/" + wf) or str(r["workflow_id"]) == wf]
+    body = runs(items)
+elif parts[-1] == "jobs":
+    body = {"total_count": 0, "jobs": state["jobs"].get(parts[-2], [])}
+else:
+    raise SystemExit("fake gh: unexpected path " + path)
+print(json.dumps([body] if slurp else body))
+'''
+
+HEAD_BRANCH = "feat/x"
+GATE_RUN = {"id": 9001, "workflow_id": 77, "name": "gate-authority", "event": "pull_request_target",
+            "path": ".github/workflows/gate-authority.yml", "head_sha": BASE, "head_branch": HEAD_BRANCH,
+            "status": "completed", "conclusion": "success",
+            "pull_requests": [{"number": 12, "head": {"sha": HEAD}}]}
+SPOOF_RUN = {"id": 9002, "workflow_id": 78, "name": "gate-authority", "event": "pull_request",
+             "path": ".github/workflows/spoof.yml", "head_sha": HEAD, "head_branch": HEAD_BRANCH,
+             "status": "completed", "conclusion": "success",
+             "pull_requests": [{"number": 12, "head": {"sha": HEAD}}]}
+OTHER_PR_GATE_RUN = dict(GATE_RUN, id=9003, head_branch="feat/other",
+                         pull_requests=[{"number": 13, "head": {"sha": "b" * 40}}])
+LEASE_RUN = {"id": 9004, "workflow_id": 79, "name": "lease-tamper", "event": "pull_request",
+             "path": ".github/workflows/lease-tamper.yml", "head_sha": HEAD, "head_branch": HEAD_BRANCH,
+             "status": "completed", "conclusion": "failure",
+             "pull_requests": [{"number": 12, "head": {"sha": HEAD}}]}
+
+
+class ReviewRerunTest(unittest.TestCase):
+    def doc(self):
+        self.assertTrue(RERUN_WORKFLOW.is_file())
+        text = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        doc = strict_yaml(text)
+        self.assertIn(yaml_cross_check(text, doc), (True, None))
+        return doc
+
+    def step(self):
+        doc = self.doc()
+        (job,) = doc["jobs"].values()
+        runs = [step for step in job["steps"] if "run" in step]
+        self.assertEqual(len(runs), 1, "one rerun step")
+        return runs[0]
+
+    def test_rerun_workflow_shape_is_minimal(self):
+        doc = self.doc()
+        types = set(doc["on"]["pull_request_review"]["types"])
+        self.assertEqual(set(doc["on"]), {"pull_request_review"})
+        self.assertLessEqual({"submitted", "dismissed"}, types)
+        self.assertEqual(doc["permissions"], {"contents": "read", "actions": "write"})
+        (job,) = doc["jobs"].values()
+        self.assertNotIn("permissions", job)
+        for where, key, item in _walk(doc):
+            self.assertNotIn(key, FORBIDDEN_KEYS - {"if"}, where)
+            if key == "run":
+                self.assertNotIn("${{", item, where)
+            if isinstance(item, str):
+                for word in ("GITHUB_ENV", "GITHUB_PATH", "secrets."):
+                    self.assertNotIn(word, item, where)
+        env = set(self.step()["env"])
+        self.assertLessEqual({"GH_TOKEN", "REPO", "PR_NUMBER"}, env)
+        self.assertLessEqual(env, {"GH_TOKEN", "REPO", "PR_NUMBER", "HEAD_SHA", "HEAD_REF"})
+
+    def run_step(self, runs, jobs=None):
+        step = self.step()
+        tmp = Path(tempfile.mkdtemp(prefix="review-rerun-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "gh").write_text(FAKE_GH, encoding="utf-8")
+        os.chmod(tmp / "gh", 0o755)
+        (tmp / "state.json").write_text(json.dumps({"runs": runs, "jobs": jobs or {}}), encoding="utf-8")
+        values = {"${{ github.token }}": "fake-token", "${{ github.repository }}": "mojomast/rizzstack",
+                  "${{ github.event.pull_request.head.sha }}": HEAD,
+                  "${{ github.event.pull_request.number }}": "12",
+                  "${{ github.event.pull_request.head.ref }}": HEAD_BRANCH}
+        env = {"PATH": "%s:%s" % (tmp, os.environ.get("PATH", "")), "FAKE_GH_STATE": str(tmp / "state.json"),
+               "FAKE_GH_LOG": str(tmp / "log.jsonl"), "HOME": str(tmp)}
+        for key, value in step["env"].items():
+            self.assertIn(value, values, "unexpected env expression %s=%s" % (key, value))
+            env[key] = values[value]
+        proc = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]], env=env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        log = tmp / "log.jsonl"
+        calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        return [path for method, path in calls if method == "POST"]
+
+    def test_a_review_reruns_the_base_pinned_gate_for_this_pull_request(self):
+        posts = self.run_step([GATE_RUN, SPOOF_RUN, OTHER_PR_GATE_RUN])
+        self.assertIn("repos/mojomast/rizzstack/actions/runs/9001/rerun", [p.lstrip("/") for p in posts])
+
+    def test_a_green_gate_is_rerun_too_so_a_later_rejection_turns_it_red(self):
+        posts = [p.lstrip("/") for p in self.run_step([dict(GATE_RUN, conclusion="success")])]
+        self.assertEqual(posts, ["repos/mojomast/rizzstack/actions/runs/9001/rerun"])
+
+    def test_same_named_runs_from_other_workflows_or_pull_requests_are_not_rerun(self):
+        posts = " ".join(self.run_step([GATE_RUN, SPOOF_RUN, OTHER_PR_GATE_RUN]))
+        self.assertNotIn("9002", posts)
+        self.assertNotIn("9003", posts)
+
+    def test_failed_lease_tamper_jobs_are_still_rerun(self):
+        posts = [p.lstrip("/") for p in self.run_step(
+            [LEASE_RUN], jobs={"9004": [{"id": 55, "name": "lease-tamper", "conclusion": "failure"}]})]
+        self.assertIn("repos/mojomast/rizzstack/actions/jobs/55/rerun", posts)
+
+
+# --------------------------------------------------------------- the lane's gate-authority check
+GATE_CHECK_PROVEN = {"name": "gate-authority", "status": "completed", "conclusion": "success",
+                     "head": HEAD, "completed_at": "2026-11-27T22:10:00Z", "app": "github-actions",
+                     "workflow": {"event": "pull_request_target",
+                                  "path": ".github/workflows/gate-authority.yml"}}
+
+
+def _lane_facts(checks, required=("ci-gate", "gate-authority"), files=("docs/readme.md",), reviews=None):
+    return {
+        "pr": {"state": "OPEN", "is_draft": False, "mergeable": True,
+               "merge_state_status": "CLEAN", "head": HEAD, "files": list(files)},
+        "class": LANE.NON_SLICE,
+        "reviews": reviews if reviews is not None else [
+            {"state": "COMMENTED", "commit_id": HEAD, "author": REVIEWER, "body": LINE}],
+        "checks": [{"name": "ci-gate", "status": "completed", "conclusion": "success", "head": HEAD,
+                    "completed_at": "2026-11-27T22:09:00Z"}] + list(checks),
+        "required_checks": list(required),
+        "verify": {"records": [], "compare": {}, "provenance": {}},
+        "lease_tamper": {"ran": True, "ok": True, "reason": "gate_ok",
+                         "output_tail": "lease-tamper: class=non-slice TIER=T3"},
+        "owner_held": False,
+    }
+
+
+class GateAuthorityCheckTest(unittest.TestCase):
+    def verdict(self, *checks, **kwargs):
+        return LANE.decide(_lane_facts(checks, **kwargs))
+
+    def test_proven_gate_authority_run_counts(self):
+        self.assertTrue(self.verdict(GATE_CHECK_PROVEN)["merge"])
+
+    def test_same_named_job_from_a_pull_request_workflow_does_not_count(self):
+        spoof = dict(GATE_CHECK_PROVEN, workflow={"event": "pull_request",
+                                                  "path": ".github/workflows/gate-authority.yml"})
+        self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven")
+
+    def test_same_named_job_from_another_workflow_file_does_not_count(self):
+        spoof = dict(GATE_CHECK_PROVEN, workflow={"event": "pull_request_target",
+                                                  "path": ".github/workflows/spoof.yml"})
+        self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven")
+
+    def test_commit_status_or_other_app_does_not_count(self):
+        for spoof in (dict(GATE_CHECK_PROVEN, app="some-app"),
+                      {k: v for k, v in GATE_CHECK_PROVEN.items() if k not in ("app", "workflow")},
+                      dict(GATE_CHECK_PROVEN, workflow=None)):
+            self.assertEqual(self.verdict(spoof)["reason"], "gate_authority_unproven", spoof)
+
+    def test_an_unproven_same_named_check_beside_a_proven_one_refuses(self):
+        spoof = dict(GATE_CHECK_PROVEN, completed_at="2026-11-27T22:11:00Z",
+                     workflow={"event": "pull_request", "path": ".github/workflows/x.yml"})
+        self.assertEqual(self.verdict(GATE_CHECK_PROVEN, spoof)["reason"], "gate_authority_unproven")
+
+    def test_lane_collects_app_and_workflow_provenance_for_check_runs(self):
+        api = _FakeLaneApi()
+        api.check_runs = [
+            {"name": "ci-gate", "status": "completed", "conclusion": "success", "head_sha": HEAD,
+             "completed_at": "2026-11-27T22:09:00Z", "app": {"slug": "github-actions"},
+             "check_suite": {"id": 501}},
+            {"name": "gate-authority", "status": "completed", "conclusion": "success", "head_sha": HEAD,
+             "completed_at": "2026-11-27T22:10:00Z", "app": {"slug": "github-actions"},
+             "check_suite": {"id": 502}},
+        ]
+        api.suite_runs = {"502": [{"id": 9001, "event": "pull_request_target",
+                                   "path": ".github/workflows/gate-authority.yml"}]}
+        facts = LANE.collect_facts("mojomast/rizzstack", 12, ".", "test-token", api_url="https://api.test",
+                                   http=api, gate_record={"ran": True, "ok": True, "reason": "gate_ok",
+                                                          "head": HEAD, "output_tail": "lease-tamper: class=non-slice\n"},
+                                   verify_dir=Path(tempfile.mkdtemp()), plan_path=api.plan,
+                                   required_checks=("ci-gate", "gate-authority"))
+        gate = [c for c in facts["checks"] if c["name"] == "gate-authority"]
+        self.assertEqual(len(gate), 1)
+        self.assertEqual(gate[0]["app"], "github-actions")
+        self.assertEqual(gate[0]["workflow"], {"event": "pull_request_target",
+                                               "path": ".github/workflows/gate-authority.yml"})
+
+
+class _FakeLaneApi:
+    def __init__(self):
+        self.check_runs = []
+        self.suite_runs = {}
+        tmp = Path(tempfile.mkdtemp(prefix="lane-api-"))
+        self.plan = tmp / "plan.json"
+        self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
+
+    def __call__(self, url, token):
+        parsed = urllib.parse.urlparse(url)
+        path, query = parsed.path, dict(urllib.parse.parse_qsl(parsed.query))
+        if re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/\d+", path):
+            return {"number": 12, "state": "open", "draft": False, "mergeable": True,
+                    "mergeable_state": "clean", "head": {"sha": HEAD, "ref": "feat/x"},
+                    "base": {"ref": "main", "sha": BASE}, "labels": []}, ""
+        if path.endswith("/reviews"):
+            return [{"state": "COMMENTED", "commit_id": HEAD, "body": LINE, "user": {"login": REVIEWER},
+                     "submitted_at": "2026-11-27T22:00:00Z"}], ""
+        if path.endswith("/files"):
+            return [{"filename": "docs/readme.md"}], ""
+        if path.endswith("/check-runs"):
+            return {"check_runs": self.check_runs}, ""
+        if path.endswith("/actions/runs") and "check_suite_id" in query:
+            runs = self.suite_runs.get(query["check_suite_id"], [])
+            return {"total_count": len(runs), "workflow_runs": runs}, ""
+        if "/compare/" in path:
+            return {"status": "ahead", "files": []}, ""
+        raise AssertionError("unexpected REST path: " + path)
+
+
+# --------------------------------------------------------------- owner attestation identity
+def _owner_line(login, commit=HEAD):
+    review = {"state": "COMMENTED", "commit_id": commit, "body": "APPROVE (owner) at %s" % commit}
+    if login is not None:
+        review["author"] = login
+    return review
+
+
+class OwnerAttestationIdentityTest(unittest.TestCase):
+    SENSITIVE = (".github/workflows/ci.yml",)
+
+    def verdict(self, owner_review):
+        reviews = [{"state": "COMMENTED", "commit_id": HEAD, "author": REVIEWER, "body": LINE}]
+        if owner_review is not None:
+            reviews.append(owner_review)
+        return LANE.decide(_lane_facts((), required=("ci-gate",), files=self.SENSITIVE, reviews=reviews))
+
+    def test_owner_line_from_the_owner_login_is_an_attestation(self):
+        self.assertTrue(self.verdict(_owner_line(OWNER))["merge"])
+
+    def test_owner_line_from_any_other_login_is_not(self):
+        for login in (COORDINATOR, REVIEWER, "someone-else", "mojomast-bot", "", None):
+            self.assertEqual(self.verdict(_owner_line(login))["reason"], "owner_review_missing", login)
+
+    def test_owner_identity_rule_lives_in_the_shared_policy_block(self):
+        for module in (GATE, LANE):
+            self.assertEqual(module.OWNER_LOGIN, OWNER)
+            self.assertTrue(module.owner_identity_ok({"user": {"login": OWNER}}))
+            self.assertTrue(module.owner_identity_ok({"author": OWNER}))
+            for login in (COORDINATOR, REVIEWER, "", None, "MOJOMAST "):
+                self.assertFalse(module.owner_identity_ok({"user": {"login": login}}), login)
+            self.assertFalse(module.owner_identity_ok({}))
+            self.assertFalse(module.review_is_approval(
+                {"state": "COMMENTED", "commit_id": HEAD, "body": "APPROVE (owner) at " + HEAD,
+                 "user": {"login": REVIEWER}},
+                module.REVIEW_APPROVE_OWNER))
+            self.assertTrue(module.review_is_approval(
+                {"state": "COMMENTED", "commit_id": HEAD, "body": "APPROVE (owner) at " + HEAD,
+                 "user": {"login": OWNER}},
+                module.REVIEW_APPROVE_OWNER))
+
+
+# --------------------------------------------------------------- identity edge cases (review follow-ups)
+class IdentityEdgeTest(unittest.TestCase):
+    def test_strict_head_path_also_requires_the_reviewer_login(self):
+        for login, ok in ((REVIEWER, True), (COORDINATOR, False), (OWNER, False), (None, False)):
+            review = GATE.independent_review_at_head([_review(login)], HEAD)
+            self.assertEqual(review is not None, ok, login)
+
+    def test_a_carried_approval_from_the_coordinator_or_owner_is_refused(self):
+        older = "2" * 40
+        carry = {older: {"review_sha": older, "base": BASE, "head": HEAD, "ok": True,
+                         "reason": LANE.CARRY_OK, "detail": ""}}
+        for login, ok in ((REVIEWER, True), (COORDINATOR, False), (OWNER, False)):
+            facts = _lane_facts((), required=("ci-gate",), reviews=[
+                {"state": "COMMENTED", "commit_id": older, "author": login,
+                 "body": "APPROVE (independent review) at " + older}])
+            facts["review_carry"] = carry
+            self.assertEqual(LANE.decide(facts)["merge"], ok, login)
+
+    def test_lane_refuses_near_miss_and_missing_authors(self):
+        for author in ("rizzstack-reviewer", "RIZZSTACK-REVIEWER[BOT]", " rizzstack-reviewer[bot]", "", None):
+            review = {"state": "COMMENTED", "commit_id": HEAD, "body": LINE}
+            if author is not None:
+                review["author"] = author
+            self.assertFalse(LANE.decide(_lane_facts((), required=("ci-gate",), reviews=[review]))["merge"],
+                             repr(author))
+
+    def test_merge_states_are_exactly_clean(self):
+        self.assertEqual(tuple(LANE.MERGE_STATES), ("CLEAN",))
 
 
 # --------------------------------------------------------------- T1 allowlist
@@ -230,7 +846,8 @@ BASE_FILES = {
 
 
 class T1AllowlistTest(unittest.TestCase):
-    def tier(self, changes, repo_name="orbitdesktop", symlinks=(), modes=None):
+    def tier(self, changes, repo_name="orbitdesktop", symlinks=(), modes=None, modes_only=None,
+             gitlinks=()):
         root = tempfile.mkdtemp(prefix="gate-authority-")
         repo = GitRepo(root)
         for path, text in BASE_FILES.items():
@@ -242,7 +859,15 @@ class T1AllowlistTest(unittest.TestCase):
         for link, target in symlinks:
             (repo.path / link).parent.mkdir(parents=True, exist_ok=True)
             os.symlink(target, repo.path / link)
-        head = repo.commit("change")
+        for path, mode in (modes_only or {}).items():
+            os.chmod(repo.path / path, mode)
+        for path in gitlinks:
+            repo.git("update-index", "--add", "--cacheinfo", "160000,%s,%s" % (base, path))
+        if gitlinks:
+            repo.git("commit", "-q", "-m", "change")
+            head = repo.git("rev-parse", "HEAD")
+        else:
+            head = repo.commit("change")
         tier, reasons = GATE.risk_tier(str(repo.path), base, head, repo_name=repo_name, environ={})
         return tier, [reason for reason, _ in reasons]
 
@@ -291,6 +916,54 @@ class T1AllowlistTest(unittest.TestCase):
         self.assert_t3("unknown_kind", {"docs/setup.ps1": "Write-Host hi\n"})
         self.assert_t3("unknown_kind", {"src/slice.py": "VALUE = 2\n"}, modes={"src/slice.py": 0o755})
         self.assert_t3("unknown_kind", {}, symlinks=[("src/link.py", "../hyvv/cli.py")])
+
+    def test_dynamic_subprocess_and_code_execution_are_t3(self):
+        for text in ("from subprocess import run\n", "m = __import__('subprocess')\n",
+                     "import importlib\nm = importlib.import_module('os')\n", "import os\nos.execv('/bin/true', [])\n",
+                     "import os\nos.posix_spawn('/bin/true', [], {})\n", "eval('1')\n", "exec('x = 1')\n",
+                     "import ctypes\n", "import multiprocessing\n", "import pty\n"):
+            self.assert_t3("capability_subprocess", {"src/slice.py": text})
+        for text in ("const cp = require('node:child_process');\n", "const cp = await import('child_process');\n",
+                     "import { spawn } from 'child_process';\n", "const f = new Function('return 1');\n"):
+            self.assert_t3("capability_subprocess", {"packages/widget/index.js": text})
+
+    def test_more_network_capabilities_are_t3(self):
+        for text in ("from http import client\n", "import ssl\n", "import asyncio\nasyncio.open_connection('x', 1)\n",
+                     "import ftplib\n", "import smtplib\n", "import http.server\n"):
+            self.assert_t3("capability_network", {"src/slice.py": text})
+        for text in ("const ws = new WebSocket('wss://x.invalid');\n", "navigator.sendBeacon('/x');\n",
+                     "const x = new XMLHttpRequest();\n", "import net from 'node:net';\n"):
+            self.assert_t3("capability_network", {"packages/widget/index.js": text})
+
+    def test_a_new_test_module_with_a_capability_is_t3(self):
+        self.assert_t3("capability_subprocess", {"tests/test_new.py": "import subprocess\n\ndef test_x():\n    pass\n"})
+
+    def test_unseen_auth_validator_sandbox_and_approval_variants_are_t3(self):
+        self.assert_t3("auth_surface", {"hyvv/validators/x.py": "VALUE = 1\n"}, repo_name="hyvv")
+        self.assert_t3("auth_surface", {"src/sandbox/x.py": "VALUE = 1\n"})
+        self.assert_t3("auth_surface", {"apps/rizzstack-approvals-v2/x.html": "<p>x</p>\n"})
+        self.assert_t3("auth_surface", {"src/permissions.py": "VALUE = 1\n"})
+
+    def test_more_unknown_kinds_are_t3(self):
+        for path, text in (("docs/run.bat", "echo hi\n"), ("docs/run.cmd", "echo hi\n"),
+                           ("src/blob.bin", "\x00\x01\x02binary\n"), ("src/native.so", "ELF\n"),
+                           ("src/pkg.whl", "PK\n"), ("src/mod.pyc", "x\n"), ("docs/nb.ipynb", "{}\n"),
+                           ("src/Makefile", "all:\n\ttrue\n"), ("src/noext", "x\n")):
+            self.assert_t3("unknown_kind", {path: text})
+
+    def test_pure_mode_change_and_outside_symlink_are_t3(self):
+        self.assert_t3("unknown_kind", {}, modes_only={"src/slice.py": 0o755})
+        self.assert_t3("unknown_kind", {}, symlinks=[("src/escape.py", "../../../../etc/passwd")])
+
+    def test_submodule_is_t3(self):
+        self.assert_t3("unknown_kind", {}, gitlinks=["src/vendored"])
+
+    def test_every_new_t3_reason_has_a_gate_drill_case(self):
+        drill = _load(DRILL_SCRIPT, "gate_drill_authority_under_test")
+        reasons = [(case.expect_reason or "") for case in drill.CASES
+                   if case.kind == "tier" and case.expect_tier == "T3"]
+        for reason in NEW_T3_REASONS:
+            self.assertTrue(any(r.startswith(reason + ":") for r in reasons), reason)
 
 
 if __name__ == "__main__":
