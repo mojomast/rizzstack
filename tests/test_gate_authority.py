@@ -647,13 +647,19 @@ class ReviewRerunTest(unittest.TestCase):
 # A pull_request_target run reports its check on the BASE tip (GITHUB_SHA is the base branch's
 # last commit), so the real gate never appears among the PR head's check runs.  The lane finds
 # the gate through its workflow run instead.  GitHub's own required check is not the authority
-# (it is pinned only to the Actions app, so a same-named job satisfies it); the lane is, until
-# the owner adds a required-workflow ruleset rule.
+# (it is pinned only to the Actions app, so a same-named job satisfies it).  On these personal-
+# account repos no required-workflow rule exists, so native and API merges stay unguarded by the
+# gate and the lane is the only merge authority.
 REPO = "mojomast/rizzstack"
 GATE_WORKFLOW_PATH = ".github/workflows/gate-authority.yml"
 REVIEW_AT = "2026-11-27T22:00:00Z"
 BASE_TIP = "4" * 40          # main has moved on since the gate run started
 FOREIGN = "6" * 40           # a commit that is not on main (another base branch)
+RELEASE_TIP = "7" * 40       # tip of a non-main base branch
+MISSING = object()           # compare payload without a files list
+GATE_CODE_FILES = (".github/workflows/gate-authority.yml", ".github/workflows/review-rerun.yml",
+                   ".github/scripts/lease_tamper.py", ".github/scripts/gate_drill.py",
+                   ".github/scripts/gate_drill.lock.json", ".github/scripts/helpers/new_module.py")
 
 
 def _gate_run(**overrides):
@@ -704,7 +710,10 @@ class _FakeLaneApi:
         self.plan = tmp / "plan.json"
         self.plan.write_text(json.dumps({"owner_held": {"prs": []}}), encoding="utf-8")
         self.paths = []
+        self.base_ref = "main"
         self.base_tip = BASE_TIP
+        # compare/<run head_sha>...<base tip> file lists (default: nothing changed); MISSING drops the key
+        self.compare_files = {}
         # compare/<run head_sha>...<base tip> statuses; any other pair at the tip is "diverged"
         self.gate_compares = {(BASE, BASE_TIP): "ahead", (BASE_TIP, BASE_TIP): "identical"}
 
@@ -720,7 +729,7 @@ class _FakeLaneApi:
             return {"number": 12, "state": "open", "draft": False, "mergeable": True,
                     "mergeable_state": "clean", "head": {"sha": HEAD, "ref": HEAD_BRANCH,
                                                          "repo": {"full_name": REPO}},
-                    "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}}, "labels": []}, ""
+                    "base": {"ref": self.base_ref, "sha": BASE, "repo": {"full_name": REPO}}, "labels": []}, ""
         if path.endswith("/reviews"):
             return list(self.reviews), ""
         if path.endswith("/files"):
@@ -740,12 +749,17 @@ class _FakeLaneApi:
             if app is None:
                 raise AssertionError("unknown check suite " + match.group(1))
             return {"id": int(match.group(1)), "app": {"slug": app}, "head_sha": BASE}, ""
-        if re.fullmatch(r"/repos/[^/]+/[^/]+/git/ref/heads/main", path):
-            return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": self.base_tip}}, ""
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/git/ref/heads/(.+)", path)
+        if match:
+            if urllib.parse.unquote(match.group(1)) != self.base_ref:
+                raise AssertionError("base tip read for a branch other than the PR's base: " + path)
+            return {"ref": "refs/heads/" + self.base_ref, "object": {"type": "commit", "sha": self.base_tip}}, ""
         match = re.fullmatch(r"/repos/[^/]+/[^/]+/compare/([0-9a-f]{40})\.\.\.([0-9a-f]{40})", path)
         if match and match.group(2) == self.base_tip:
-            status = self.gate_compares.get((match.group(1), match.group(2)), "diverged")
-            return {"status": status, "files": []}, ""
+            pair = (match.group(1), match.group(2))
+            status = self.gate_compares.get(pair, "diverged")
+            files = self.compare_files.get(pair, [])
+            return ({"status": status} if files is MISSING else {"status": status, "files": files}), ""
         if "/compare/" in path:
             return {"status": "ahead", "files": []}, ""
         raise AssertionError("unexpected REST path: " + path)
@@ -774,8 +788,11 @@ class GateAuthorityRunTest(unittest.TestCase):
                                                          "output_tail": "lease-tamper: class=non-slice\n"},
                                   verify_dir=verify, plan_path=api.plan, required_checks=required)
 
-    def verdict(self, *runs, app="github-actions", head_checks=(), reviews=None, compares=None, **kwargs):
+    def verdict(self, *runs, app="github-actions", head_checks=(), reviews=None, compares=None,
+                compare_files=None, base_ref="main", base_tip=BASE_TIP, **kwargs):
         api = _FakeLaneApi(self)
+        api.base_ref, api.base_tip = base_ref, base_tip
+        api.compare_files.update(compare_files or {})
         for run in runs:
             api.add_run(run, app)
         api.check_runs.extend(head_checks)
@@ -897,6 +914,65 @@ class GateAuthorityRunTest(unittest.TestCase):
         for state in ({"status": "queued", "conclusion": None}, {"status": "waiting", "conclusion": None},
                       {"status": "pending", "conclusion": None}, {"status": "requested", "conclusion": None}):
             self.assert_refused("gate_authority_not_green", _gate_run(**state))
+
+    # ---- r5: the deciding run's gate code must be byte-identical to the current base tip's
+    def _changed(self, *entries):
+        return {(BASE, BASE_TIP): list(entries)}
+
+    def test_gate_code_changed_on_the_base_since_the_run_refuses(self):
+        for name in GATE_CODE_FILES:
+            for status in ("modified", "added", "removed"):
+                self.assert_refused("gate_authority_stale_gate", _gate_run(),
+                                    compare_files=self._changed({"filename": name, "status": status}))
+        # a rename away from (or onto) gate code counts as a change to it
+        self.assert_refused("gate_authority_stale_gate", _gate_run(), compare_files=self._changed(
+            {"filename": "docs/old_gate.py", "previous_filename": ".github/scripts/lease_tamper.py",
+             "status": "renamed"}))
+        self.assert_refused("gate_authority_stale_gate", _gate_run(), compare_files=self._changed(
+            {"filename": ".github/workflows/review-rerun.yml", "previous_filename": "docs/x.yml",
+             "status": "renamed"}))
+        # still refused when unrelated files changed alongside
+        self.assert_refused("gate_authority_stale_gate", _gate_run(), compare_files=self._changed(
+            {"filename": "docs/readme.md", "status": "modified"},
+            {"filename": ".github/scripts/lease_tamper.py", "status": "modified"}))
+
+    def test_other_base_changes_since_the_run_still_count(self):
+        unrelated = self._changed(*({"filename": n, "status": "modified"} for n in (
+            "docs/readme.md", "scripts/merge_lane_v5.py", ".github/workflows/ci.yml",
+            ".github/scripts-notes.md", ".github/workflows/gate-authority.yml.bak", "tests/test_x.py")))
+        self.assertTrue(self.verdict(_gate_run(), compare_files=unrelated)["merge"])
+        self.assertTrue(self.verdict(_gate_run(head_sha=BASE_TIP))["merge"])
+
+    def test_missing_malformed_or_truncated_compare_file_list_refuses(self):
+        for files in (MISSING, None, "x", {"filename": "docs/readme.md"},
+                      [{"status": "modified"}], [{"filename": None}], ["docs/readme.md"],
+                      [{"filename": "docs/f%d.md" % i, "status": "modified"} for i in range(300)]):
+            self.assert_refused("gate_authority_stale_gate", _gate_run(),
+                                compare_files={(BASE, BASE_TIP): files})
+
+    def test_a_pull_request_whose_base_is_not_main(self):
+        release = "release/2026.11"
+        run = _gate_run(pull_requests=[{"number": 12, "head": {"sha": HEAD}, "base": {"ref": release,
+                                                                                     "sha": BASE}}])
+        on_release = {(BASE, RELEASE_TIP): "ahead"}
+        api = _FakeLaneApi(self)
+        api.base_ref, api.base_tip = release, RELEASE_TIP
+        api.gate_compares.update(on_release)
+        api.add_run(run)
+        verdict = LANE.decide(self.facts(api))
+        self.assertTrue(verdict["merge"], verdict)
+        self.assertIn("/repos/%s/git/ref/heads/%s" % (REPO, release), api.paths)
+        self.assertNotIn("/repos/%s/git/ref/heads/main" % REPO, api.paths)
+        self.assertIn("/repos/%s/compare/%s...%s" % (REPO, BASE, RELEASE_TIP), api.paths)
+        # a run that judged the PR against main does not count for a PR now based on release
+        self.assert_refused("gate_authority_wrong_base", _gate_run(), base_ref=release, base_tip=RELEASE_TIP,
+                            compares=on_release)
+        # a release-based run from a commit not on release's history does not count
+        self.assert_refused("gate_authority_wrong_base", run, base_ref=release, base_tip=RELEASE_TIP)
+        # and gate code changed on release since the run is still stale
+        self.assert_refused("gate_authority_stale_gate", run, base_ref=release, base_tip=RELEASE_TIP,
+                            compares=on_release, compare_files={(BASE, RELEASE_TIP): [
+                                {"filename": ".github/scripts/lease_tamper.py", "status": "modified"}]})
 
     def test_gate_is_demanded_whenever_the_base_carries_the_gate_workflow(self):
         self.assert_refused("gate_authority_unproven", required=("ci-gate",))
