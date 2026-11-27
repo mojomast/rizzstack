@@ -460,6 +460,21 @@ class TierRules(unittest.TestCase):
 
     # ---- fail closed -----------------------------------------------------
 
+    def test_codemap_builder_scripts_are_t3(self):
+        self.assert_t3(
+            "not_t1_allowlisted",
+            repo_name="rizzstack",
+            base_files={"scripts/codemap/build.py": "# build\n", "codemap/README.md": "# map\n"},
+            changes={"scripts/codemap/build.py": "# build v2\n"},
+        )
+
+    def test_codemap_documents_are_still_t1(self):
+        self.assert_t1(
+            repo_name="rizzstack",
+            base_files={"codemap/README.md": "# map\n"},
+            changes={"codemap/README.md": "# map v2\n"},
+        )
+
     def test_unreadable_history_is_t3(self):
         root = tempfile.mkdtemp(prefix="tier-broken-")
         repo, _base, head = build_change(root, changes={"src/slice.py": "new\n"})
