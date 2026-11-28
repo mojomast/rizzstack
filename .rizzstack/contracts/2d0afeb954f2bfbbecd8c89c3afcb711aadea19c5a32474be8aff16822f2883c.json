@@ -529,8 +529,9 @@
     "approved_at": null,
     "approved_by": null,
     "contract_sha256": "2d0afeb954f2bfbbecd8c89c3afcb711aadea19c5a32474be8aff16822f2883c",
-    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
-    "status": "draft"
+    "note": "Superseded by S2 r6 (5c22cbf361371616e12f056e29264e443e1b665f36d60de18bc4102e4d9f7b57): open() pinned to two __file__ constants with a runtime spy, print banned, closed refusal reasons, verifier size caps and stdout check, per GROKCHAT round 5.",
+    "status": "superseded",
+    "superseded_by": "5c22cbf361371616e12f056e29264e443e1b665f36d60de18bc4102e4d9f7b57"
   },
   "risk": {
     "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
