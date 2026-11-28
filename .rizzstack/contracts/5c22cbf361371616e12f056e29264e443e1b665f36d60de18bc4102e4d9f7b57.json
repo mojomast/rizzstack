@@ -592,8 +592,9 @@
     "approved_at": null,
     "approved_by": null,
     "contract_sha256": "5c22cbf361371616e12f056e29264e443e1b665f36d60de18bc4102e4d9f7b57",
-    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
-    "status": "draft"
+    "note": "superseded by the owner-approved schema re-cut c413827e (metadata-only)",
+    "status": "superseded",
+    "superseded_by": "c413827ed596969626234b6ea5d296a81d46f4df05f7787afe5ec12156601872"
   },
   "risk": {
     "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
