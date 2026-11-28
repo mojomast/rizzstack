@@ -51,6 +51,8 @@ Output (exit 0 merge, exit 1 refuse)::
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -63,6 +65,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+# The signed pre-authorization checker is loaded from this checkout's own scripts/
+# directory, first on sys.path, so its verifier import resolves to the frozen,
+# sha256-pinned module next to it and never to a module from cwd or PYTHONPATH.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import preauth  # noqa: E402
 
 SLICE = "slice"
 NON_SLICE = "non-slice"
@@ -94,6 +102,28 @@ MAX_PAGES = 10
 DEFAULT_REQUIRED_CHECKS = ("ci-gate",)
 DEFAULT_VERIFY_DIR = "~/.hermes/plugin-data/bundlebees/verify-results"
 DEFAULT_PLAN_PATH = "~/.hermes/plugin-data/bundlebees/campaigns/feature-batch-1/plan.json"
+#: The lane-owned pre-authorization store: envelopes/<name>.json, each with its
+#: detached signature <name>.json.sig, and ledger.json (the measured facts).
+DEFAULT_PREAUTH_DIR = "~/.hermes/plugin-data/bundlebees/preauth"
+PREAUTH_ACTION = "merge_slice"
+#: The one lock file in the store.  Whoever holds an exclusive flock on it owns
+#: the ledger: the lane holds it across load, check, record and the merge call.
+PREAUTH_LOCK_NAME = "ledger.lock"
+#: The frozen ledger schema: the five facts the checker reads, and the exact keys of
+#: one recorded use.
+PREAUTH_LEDGER_KEYS = ("revoked", "consumed", "nonces", "attempts", "bees_in_flight")
+PREAUTH_USE_KEYS = ("envelope_id", "nonce", "contract_sha256", "pr", "head", "at")
+#: The checker's closed refusal set, verbatim; anything else is reported as unknown.
+PREAUTH_REASONS = frozenset({
+    "envelope_schema_invalid", "envelope_clock_invalid", "envelope_policy_unproven",
+    "envelope_signers_invalid", "envelope_signer_untrusted", "envelope_bad_signature",
+    "envelope_verifier_unavailable", "envelope_expired", "envelope_not_yet_valid",
+    "envelope_ttl_exceeded", "envelope_facts_unproven", "envelope_revoked",
+    "envelope_action_forbidden", "envelope_repo_mismatch", "envelope_base_mismatch",
+    "envelope_contract_not_listed", "envelope_tier_exceeded", "envelope_oracle_unproven",
+    "envelope_oracle_changed", "envelope_nonce_reused", "envelope_replayed",
+    "envelope_budget_exhausted",
+})
 MERGE_LANE_ENV = "BUNDLEBEES_MERGE_LANE"
 
 #: Base-store lease identity.  A slice verify record is bound to the frozen
@@ -2026,6 +2056,267 @@ def verify_merge(repo_slug, number, head, token, api_url=DEFAULT_API_URL, http=N
 
 
 # ---------------------------------------------------------------------------
+# signed pre-authorization
+# ---------------------------------------------------------------------------
+
+
+def load_preauth_store(directory):
+    """``{"envelopes": [...], "ledger": dict|None}`` from the lane-owned store.
+
+    Every envelope is ``{"name", "data", "signature"}`` with the exact bytes on
+    disk; a missing signature is ``None``.  A missing, unreadable or non-object
+    ledger is ``None`` and is passed to the checker as is, never replaced.
+    """
+    root = Path(os.path.expanduser(str(directory)))
+    store = {"envelopes": [], "ledger": None}
+    folder = root / "envelopes"
+    if folder.is_dir():
+        for path in sorted(folder.glob("*.json")):
+            if not path.is_file():
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            signature_path = path.with_name(path.name + ".sig")
+            try:
+                signature = signature_path.read_bytes() if signature_path.is_file() else None
+            except OSError:
+                signature = None
+            store["envelopes"].append({"name": path.name, "data": data, "signature": signature})
+    ledger_path = root / "ledger.json"
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"),
+                                object_pairs_hook=_no_duplicate_keys)
+        except (OSError, ValueError):
+            ledger = None
+        if isinstance(ledger, dict):
+            store["ledger"] = ledger
+    return store
+
+
+def measure_base_rev(repo, base_ref):
+    """The base branch tip the lane fetched, or ``None``."""
+    ref = _text(base_ref).strip()
+    if not ref:
+        return None
+    try:
+        proc = _git(repo, "rev-parse", "--verify", "origin/" + ref + "^{commit}")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _sha(_text(proc.stdout).strip())
+
+
+def _envelope_fields(data):
+    """``(action_class, id, nonce, conditions)`` from the lane's own strict parse, or ``None``.
+
+    A missing ``conditions`` key is reported as ``None``, which is not ``[]``.
+    """
+    try:
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    return (document.get("action_class"), document.get("id"), document.get("nonce"),
+            document.get("conditions"))
+
+
+class PreauthLockBusy(Exception):
+    """Another lane run holds the store lock."""
+
+
+@contextlib.contextmanager
+def preauth_lock(directory):
+    """Hold the store's exclusive lock, or raise.
+
+    Raises ``PreauthLockBusy`` when another holder has it (never waits) and
+    ``OSError`` when the lock file cannot be opened; the store is never created.
+    Closing the descriptor releases the lock.
+    """
+    root = Path(os.path.expanduser(str(directory)))
+    fd = os.open(str(root / PREAUTH_LOCK_NAME), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise PreauthLockBusy() from None
+        yield root
+    finally:
+        os.close(fd)
+
+
+def authorize_merge(verdict, facts, store, repo_slug, base_rev, now, ancestor):
+    """The lane's one pre-authorization decision for a merge ``decide`` allowed.
+
+    ``preauth.check`` is called with facts the lane measured: the exact envelope
+    and signature bytes and the ledger from the pinned store, the contract from
+    the base lease, the gate's tier, the fetched base tip, a UTC clock and git
+    ancestry.  Any doubt is a refusal; only a ``PreauthRefused`` reason from the
+    closed set is reported, and no exception text ever leaves this function.
+    """
+    if not isinstance(verdict, dict) or verdict.get("merge") is not True:
+        return {"ok": False, "reason": "preauth_not_reached"}
+    facts = facts if isinstance(facts, dict) else {}
+    provenance = ((facts.get("verify") or {}).get("provenance")) if isinstance(facts.get("verify"), dict) else None
+    contract = _text((provenance or {}).get("contract_sha256")).strip().lower()
+    if facts.get("class") != SLICE or verdict.get("class") != SLICE or not SHA256.fullmatch(contract):
+        return {"ok": False, "reason": "preauth_contract_unknown"}
+    base = _sha(base_rev)
+    if base is None:
+        return {"ok": False, "reason": "preauth_base_unknown"}
+    envelopes = (store or {}).get("envelopes") if isinstance(store, dict) else None
+    if not envelopes:
+        return {"ok": False, "reason": "preauth_missing"}
+    ledger = store.get("ledger")
+    tier = verdict.get("tier")
+    refusals = []
+    for envelope in envelopes:
+        name = _text(envelope.get("name"))
+        data = envelope.get("data")
+        signature = envelope.get("signature")
+        fields = _envelope_fields(data) if isinstance(data, bytes) else None
+        if fields is None:
+            refusals.append({"envelope": name, "reason": "preauth_envelope_unreadable"})
+            continue
+        action, envelope_id, nonce, conditions = fields
+        if not isinstance(action, str) or action != PREAUTH_ACTION:
+            refusals.append({"envelope": name, "reason": "preauth_action_mismatch"})
+            continue
+        # The checker only type-checks conditions; the lane evaluates none yet
+        # (P1-P5 are a follow-up contract), so any condition is unprovable.
+        if not isinstance(conditions, list) or conditions:
+            refusals.append({"envelope": name, "reason": "preauth_conditions_unevaluated"})
+            continue
+        if not isinstance(signature, bytes) or not signature:
+            refusals.append({"envelope": name, "reason": "preauth_signature_missing"})
+            continue
+        try:
+            result = preauth.check(data, signature, repo_slug, base, contract, tier, now, ledger, ancestor)
+        except preauth.PreauthRefused as exc:
+            reason = getattr(exc, "reason", None)
+            if reason not in PREAUTH_REASONS:
+                reason = "preauth_refused_unknown"
+            refusals.append({"envelope": name, "reason": reason})
+            continue
+        except Exception:  # noqa: BLE001 - any other failure is a refusal, never reported
+            refusals.append({"envelope": name, "reason": "preauth_error"})
+            continue
+        if (
+            not isinstance(result, dict)
+            or result.get("ok") is not True
+            or result.get("contract_sha256") != contract
+            or not isinstance(envelope_id, str)
+            or result.get("envelope_id") != envelope_id
+            or not isinstance(nonce, str)
+        ):
+            refusals.append({"envelope": name, "reason": "preauth_result_invalid"})
+            continue
+        return {"ok": True, "reason": "preauth_ok", "envelope": name, "envelope_id": envelope_id,
+                "nonce": nonce, "contract_sha256": contract}
+    return {"ok": False, "reason": "preauth_refused", "refusals": refusals}
+
+
+def record_preauth_use(directory, decision, number, head, now):
+    """Record one use in the ledger, atomically, before the merge; ``False`` on any doubt.
+
+    The caller holds ``preauth_lock(directory)``.  A corrupt or missing ledger is
+    never replaced: nothing is written and the answer is ``False``.
+    """
+    root = Path(os.path.expanduser(str(directory)))
+    path = root / "ledger.json"
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(ledger, dict):
+        return False
+    consumed = ledger.get("consumed")
+    nonces = ledger.get("nonces")
+    attempts = ledger.get("attempts")
+    if not isinstance(consumed, list) or not isinstance(nonces, dict) or not isinstance(attempts, dict):
+        return False
+    contract = decision.get("contract_sha256")
+    count = attempts.get(contract, 0)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    consumed.append({
+        "envelope_id": decision.get("envelope_id"),
+        "nonce": decision.get("nonce"),
+        "contract_sha256": contract,
+        "pr": number,
+        "head": head,
+        "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    nonces[decision.get("nonce")] = decision.get("envelope_id")
+    attempts[contract] = count + 1
+    handle = None
+    try:
+        handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(root), prefix=".ledger-",
+                                             suffix=".tmp", delete=False)
+        with handle:
+            handle.write(json.dumps(ledger, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, str(path))
+        handle = None
+        directory_fd = os.open(str(root), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        if handle is not None:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+        return False
+    return True
+
+
+def _refuse(verdict, reason):
+    verdict["merge"] = False
+    verdict["reason"] = reason
+
+
+def preauthorize(verdict, facts, pr, head, args, ancestor, stack):
+    """Gate a merge ``decide`` allowed on a signed envelope; refuses into ``verdict``.
+
+    The store lock is entered on ``stack`` so it stays held until the caller has
+    finished the merge.  Any unexpected failure is the named refusal
+    ``preauth_internal_error``; no exception text is reported.
+    """
+    try:
+        stack.enter_context(preauth_lock(DEFAULT_PREAUTH_DIR))
+    except PreauthLockBusy:
+        verdict["preauth"] = {"ok": False, "reason": "preauth_lock_busy"}
+        _refuse(verdict, "preauth_lock_busy")
+        return
+    except OSError:
+        verdict["preauth"] = {"ok": False, "reason": "preauth_lock_unavailable"}
+        _refuse(verdict, "preauth_lock_unavailable")
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        base_ref = (facts.get("pr") or {}).get("base_ref") or _text((pr.get("base") or {}).get("ref"))
+        base_rev = measure_base_rev(args.repo, base_ref)
+        decision = authorize_merge(verdict, facts, load_preauth_store(DEFAULT_PREAUTH_DIR),
+                                   args.repo_slug, base_rev, now, ancestor)
+        verdict["preauth"] = decision
+        if decision.get("ok") is not True:
+            _refuse(verdict, decision.get("reason") or "preauth_refused")
+        elif args.merge and not record_preauth_use(DEFAULT_PREAUTH_DIR, decision, args.pr, head, now):
+            _refuse(verdict, "preauth_ledger_unwritable")
+    except Exception:  # noqa: BLE001 - fail closed with a name, never with exception text
+        verdict["preauth"] = {"ok": False, "reason": "preauth_internal_error"}
+        _refuse(verdict, "preauth_internal_error")
+
+
+# ---------------------------------------------------------------------------
 # the decision core
 # ---------------------------------------------------------------------------
 
@@ -2281,20 +2572,31 @@ def main(argv=None):
     verdict["repo"] = args.repo_slug
     verdict["number"] = args.pr
     verdict["script_sha"] = (gate or {}).get("script_sha")
-    if verdict["merge"] and args.merge:
-        result = merge_pull_request(args.repo_slug, args.pr, head)
-        if not result["merged"]:
-            verdict["merge"] = False
-            verdict["reason"] = "merge_failed"
-            verdict["merge_result"] = result
-        else:
-            verified = verify_merge(args.repo_slug, args.pr, head, token, api_url)
-            verdict["merge_result"] = {**result, **verified}
-            if not verified["verified"]:
+    # The store lock is held from before the ledger is read until after the merge
+    # call returns, so two lane runs can never spend one use twice.  A failed
+    # merge keeps its recorded use (fail closed); the owner re-signs.
+    with contextlib.ExitStack() as held:
+        if verdict["merge"]:
+            preauthorize(verdict, facts, pr, head, args, ancestor, held)
+        if verdict["merge"] and args.merge:
+            try:
+                result = merge_pull_request(args.repo_slug, args.pr, head)
+            except Exception:  # noqa: BLE001 - fail closed; the use is already recorded
                 verdict["merge"] = False
-                verdict["reason"] = "merge_unverified"
+                verdict["reason"] = "merge_failed"
             else:
-                _record(args.record, verdict)
+                if not result["merged"]:
+                    verdict["merge"] = False
+                    verdict["reason"] = "merge_failed"
+                    verdict["merge_result"] = result
+                else:
+                    verified = verify_merge(args.repo_slug, args.pr, head, token, api_url)
+                    verdict["merge_result"] = {**result, **verified}
+                    if not verified["verified"]:
+                        verdict["merge"] = False
+                        verdict["reason"] = "merge_unverified"
+                    else:
+                        _record(args.record, verdict)
     _emit(verdict)
     return 0 if verdict["merge"] else 1
 
