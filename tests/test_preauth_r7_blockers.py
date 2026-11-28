@@ -62,18 +62,20 @@ class TrustRootParsingTest(base.EnvelopeCase):
         intruder = base.Keys(principal="kyle")
         try:
             data = json.dumps(base.envelope(), sort_keys=True).encode()
-            accepted_by_ssh = 0
+            accepted_by_ssh = []
             for lead in LEADS:
                 signers = self.trust_file(self.keys.line.encode() + b"\n", self.intruder_line(intruder, lead) + b"\n")
                 intruder_sig = intruder.sign(data)
-                if lead in BYPASS_LEADS:
-                    self.assertTrue(ssh_keygen_accepts(data, intruder_sig, signers),
-                                    "ssh-keygen must accept the hidden entry, else the test is vacuous: %r" % lead)
-                    accepted_by_ssh += 1
+                if ssh_keygen_accepts(data, intruder_sig, signers):
+                    accepted_by_ssh.append(lead)
                 for key, sig in ((intruder, intruder_sig), (self.keys, self.keys.sign(data))):
                     self.refused("envelope_signers_invalid", data=data, signature=sig, signers=signers)
                 self.assertEqual(self.recorder.calls, [], repr(lead))
-            self.assertEqual(accepted_by_ssh, len(BYPASS_LEADS), "vacuity: every bypass lead must be accepted by ssh-keygen")
+            # Probe every lead against this OpenSSH; only leads it really accepts count for
+            # vacuity, and at least one must be accepted, so a different OpenSSH cannot turn
+            # the test red while the checker is still correct.
+            self.assertGreaterEqual(len(accepted_by_ssh), 1,
+                                    "vacuity: local ssh-keygen accepted none of the hidden-entry leads")
         finally:
             intruder.close()
 
@@ -152,24 +154,26 @@ class OracleNormalisationTest(base.EnvelopeCase):
         new = {}
         self.refused("envelope_oracle_changed", self.refreeze(), measured=base.facts(oracle={"old": old, "new": new}))
 
-    def test_backslash_and_trailing_slash_spellings_are_normalised(self):
-        # normalize_path folds "\\" to "/" and drops empty trailing segments; it does not refuse these
-        # spellings. A changed file under either spelling is envelope_oracle_changed; two raw keys
-        # that fold to the same path are envelope_oracle_unproven; equivalent spellings of an
-        # unchanged file are allowed.
+    def test_trailing_slash_and_dot_slash_spellings_are_normalised(self):
+        # Trailing slash, "//" and "./" cannot appear in a git tree path, so normalising them
+        # cannot alias two real files. A changed file under those spellings is
+        # envelope_oracle_changed; two raw keys that fold to the same path are
+        # envelope_oracle_unproven; equivalent spellings of an unchanged file are allowed.
+        # Backslash is not normalised: it is a legal git path character (see the backslash tests).
         digest, changed = "1" * 40, "9" * 40
         canonical = "tests/test_review_packet.py"
-        for spelling in (r"tests\test_review_packet.py", "tests/test_review_packet.py/",
-                         r"tests\test_review_packet.py/", "tests/test_review_packet.py//"):
+        for spelling in ("./tests/test_review_packet.py", "tests//test_review_packet.py",
+                         "tests/test_review_packet.py/", "tests/test_review_packet.py//",
+                         "tests/./test_review_packet.py"):
             self.refused("envelope_oracle_changed", self.refreeze(),
                          measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: changed}}))
             self.refused("envelope_oracle_changed", self.refreeze(),
                          measured=base.facts(oracle={"old": {canonical: digest}, "new": {spelling: changed}}))
             self.refused("envelope_oracle_changed", self.refreeze(),
                          measured=base.facts(oracle={"old": {spelling: digest}, "new": {canonical: changed}}))
-        for left, right in ((r"tests\test_review_packet.py", canonical),
-                            (canonical, "tests/test_review_packet.py/"),
-                            (r"tests\test_review_packet.py", "tests/test_review_packet.py/"),
+        for left, right in ((canonical, "tests/test_review_packet.py/"),
+                            (canonical, "tests/test_review_packet.py//"),
+                            ("./tests/test_review_packet.py", canonical),
                             ("tests/conftest.py", "tests/conftest.py/")):
             colliding = {left: digest, right: digest}
             clean = {canonical: digest, "tests/conftest.py": digest}
@@ -177,13 +181,53 @@ class OracleNormalisationTest(base.EnvelopeCase):
                          measured=base.facts(oracle={"old": colliding, "new": clean}))
             self.refused("envelope_oracle_unproven", self.refreeze(),
                          measured=base.facts(oracle={"old": clean, "new": colliding}))
-        old = {r"tests\test_review_packet.py": digest, "tests/conftest.py/": "2" * 40, "src/thing.py": "7" * 40}
+        old = {"./tests/test_review_packet.py": digest, "tests/conftest.py/": "2" * 40, "src/thing.py": "7" * 40}
         new = {canonical: digest, "tests/conftest.py": "2" * 40, "src/thing.py": "8" * 40}
         self.assertTrue(self.run_old_new(old, new)["ok"])
 
+    def test_a_backslash_in_an_oracle_key_is_unproven(self):
+        # A backslash is a legal filename character on Linux and in git, so folding it to slash
+        # would merge two distinct tree paths. Any raw key containing "\" refuses
+        # envelope_oracle_unproven, whether the hash changed, stayed the same, or collides
+        # with a slash spelling in the same map.
+        digest, changed = "1" * 40, "9" * 40
+        canonical = "tests/test_review_packet.py"
+        for spelling in (r"tests\test_review_packet.py", r"tests\test_review_packet.py/",
+                         r"foo\bar.py", r"tests/foo\bar.py"):
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: changed}}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {canonical: digest}, "new": {spelling: changed}}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {spelling: digest}, "new": {canonical: changed}}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: digest}}))
+        colliding = {canonical: digest, r"tests\test_review_packet.py": digest}
+        clean = {canonical: digest, "tests/conftest.py": digest}
+        self.refused("envelope_oracle_unproven", self.refreeze(),
+                     measured=base.facts(oracle={"old": colliding, "new": clean}))
+        self.refused("envelope_oracle_unproven", self.refreeze(),
+                     measured=base.facts(oracle={"old": clean, "new": colliding}))
+
+    def test_a_slash_to_backslash_swap_is_unproven(self):
+        # Real-git case: git mv tests/test_review_packet.py to a literal backslash filename
+        # keeps the blob and pytest stops collecting the file. Both directions must refuse
+        # (envelope_oracle_unproven), not compare as unchanged after normalisation.
+        digest = "03348f5f0f815389d5261ab8ed4aff3e237e68bc"
+        slash = "tests/test_review_packet.py"
+        backslash = r"tests\test_review_packet.py"
+        self.refused("envelope_oracle_unproven", self.refreeze(),
+                     measured=base.facts(oracle={"old": {slash: digest}, "new": {backslash: digest}}))
+        self.refused("envelope_oracle_unproven", self.refreeze(),
+                     measured=base.facts(oracle={"old": {backslash: digest}, "new": {slash: digest}}))
+
     def test_a_non_hex_oracle_value_refuses(self):
-        good = { "tests/test_review_packet.py": "1" * 40, "tests/conftest.py": "2" * 40 }
-        bad_values = (None, "?", "", "1" * 39, "1" * 41, "1" * 63, "1" * 65, "g" * 40, "1" * 39 + "g", 40, True, [])
+        good = {"tests/test_review_packet.py": "1" * 40, "tests/conftest.py": "2" * 40}
+        bad_values = (
+            None, "?", "", "1" * 39, "1" * 41, "1" * 63, "1" * 65, "g" * 40, "1" * 39 + "g",
+            40, True, [],
+            "1" * 40 + "\n", " " + "1" * 40, "1" * 40 + " ", "\t" + "1" * 40, "1" * 40 + "\t",
+        )
         for value in bad_values:
             for side in ("old", "new"):
                 old, new = dict(good), dict(good)
@@ -194,10 +238,9 @@ class OracleNormalisationTest(base.EnvelopeCase):
             both = dict(good, **{"tests/test_review_packet.py": value})
             self.refused("envelope_oracle_unproven", self.refreeze(),
                          measured=base.facts(oracle={"old": both, "new": dict(both)}))
-        # mixed-case hex of length 40 or 64 is accepted (unchanged)
-        for digest in ("A" * 40, "aB" * 20, "0" * 64, "Ff" * 32):
-            maps = {"tests/test_review_packet.py": digest, "src/thing.py": "7" * 40}
-            self.assertTrue(self.run_old_new(maps, dict(maps, **{"src/thing.py": "8" * 40}))["ok"], digest)
+        # Lowercase 40- and 64-character hex values remain accepted. The tests do not require
+        # uppercase or mixed-case hex to be accepted (an implementer may treat lowercase as
+        # canonical). Comparison is exact, so a case mismatch of the same digest is not "unchanged".
 
 
 class ProductionCheckTest(unittest.TestCase):
@@ -212,17 +255,20 @@ class ProductionCheckTest(unittest.TestCase):
             (root / "policy").mkdir()
             shutil.copyfile(base.MODULE, root / "scripts" / "preauth.py")
             shutil.copyfile(base.VERIFY_MODULE, root / "scripts" / "preauth_verify.py")
-            lead = b"\x0c"
-            parts = intruder.public.split()
-            hidden = lead + b'#,* namespaces="rizzstack-preauth" ' + parts[0].encode() + b" " + parts[1].encode()
-            signers = root / "policy" / "allowed_signers"
-            signers.write_bytes(keys.line.encode() + b"\n" + hidden + b"\n")
             (root / "policy" / "preauth.md").write_bytes(base.TEST_POLICY)
+            signers = root / "policy" / "allowed_signers"
             copy = base._load_copy(root, "preauth_r7_check_copy")
             data = json.dumps(base.envelope(), sort_keys=True).encode()
             signature = intruder.sign(data)
-            self.assertTrue(ssh_keygen_accepts(data, signature, signers),
-                            "ssh-keygen must accept the hidden entry, else the test is vacuous")
+            chosen = None
+            for lead in BYPASS_LEADS:
+                parts = intruder.public.split()
+                hidden = lead + b'#,* namespaces="rizzstack-preauth" ' + parts[0].encode() + b" " + parts[1].encode()
+                signers.write_bytes(keys.line.encode() + b"\n" + hidden + b"\n")
+                if ssh_keygen_accepts(data, signature, signers):
+                    chosen = lead
+                    break
+            self.assertIsNotNone(chosen, "vacuity: local ssh-keygen accepted none of the hidden-entry leads")
             with mock.patch.object(copy, "OWNER_FINGERPRINTS", (keys.fingerprint,)):
                 with self.assertRaises(copy.PreauthRefused) as caught:
                     copy.check(
