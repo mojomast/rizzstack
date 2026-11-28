@@ -1,5 +1,7 @@
 # Main-branch rulesets
 
+See [pre-authorization envelopes](preauth.md) for the proposed envelope policy and its schema.
+
 `rulesets/<repo>.json` is the GitHub ruleset on each rizzstack repo's default branch, as applied on 2026-11-24 (decision 1; orbitdesktop's `gitleaks` check was added later that day, orbitdesktop #90). It's a snapshot of the API response without timestamps. `tests/test_policy_rulesets.py` checks the baseline:
 
 - no deletion and no force-push of `main`;
