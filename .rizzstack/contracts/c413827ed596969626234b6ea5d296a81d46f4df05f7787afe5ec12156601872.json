@@ -477,33 +477,39 @@
     },
     {
       "change": "add",
-      "kind": "exception",
-      "name": "PreauthRefused"
+      "kind": "class",
+      "name": "PreauthRefused",
+      "notes": "kind: exception"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "NAMESPACE"
+      "kind": "other",
+      "name": "NAMESPACE",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "MAX_TTL_SECONDS"
+      "kind": "other",
+      "name": "MAX_TTL_SECONDS",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "REQUIRED_FIELDS"
+      "kind": "other",
+      "name": "REQUIRED_FIELDS",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "ALLOWED_ACTION_CLASSES"
+      "kind": "other",
+      "name": "ALLOWED_ACTION_CLASSES",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "VERIFY_TIMEOUT_SECONDS"
+      "kind": "other",
+      "name": "VERIFY_TIMEOUT_SECONDS",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
@@ -517,13 +523,15 @@
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "OWNER_FINGERPRINTS"
+      "kind": "other",
+      "name": "OWNER_FINGERPRINTS",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
-      "kind": "constant",
-      "name": "TRUST_ROOT"
+      "kind": "other",
+      "name": "TRUST_ROOT",
+      "notes": "kind: constant"
     },
     {
       "change": "add",
@@ -531,39 +539,46 @@
       "name": "_check_for_tests"
     },
     {
-      "change": "frozen (committed at RED, re-pinned at r6, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b)",
+      "change": "none",
       "kind": "module",
-      "name": "scripts/preauth_verify.py"
+      "name": "scripts/preauth_verify.py",
+      "notes": "change: frozen (committed at RED, re-pinned at r6, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b)"
     },
     {
-      "change": "frozen (scripts/preauth_verify.py; imported by name by preauth.py only)",
+      "change": "none",
       "kind": "function",
-      "name": "_ssh_verify"
+      "name": "_ssh_verify",
+      "notes": "change: frozen (scripts/preauth_verify.py; imported by name by preauth.py only)"
     },
     {
-      "change": "add (private decision core shared by check and _check_for_tests)",
+      "change": "add",
       "kind": "function",
-      "name": "_decide"
+      "name": "_decide",
+      "notes": "change: add (private decision core shared by check and _check_for_tests)"
     },
     {
-      "change": "add (closed set of refusal reasons)",
-      "kind": "constant",
-      "name": "REFUSAL_REASONS"
+      "change": "add",
+      "kind": "other",
+      "name": "REFUSAL_REASONS",
+      "notes": "kind: constant; change: add (closed set of refusal reasons)"
     },
     {
-      "change": "add (__file__-relative path to policy/allowed_signers)",
-      "kind": "constant",
-      "name": "TRUST_ROOT"
+      "change": "add",
+      "kind": "other",
+      "name": "TRUST_ROOT",
+      "notes": "kind: constant; change: add (__file__-relative path to policy/allowed_signers)"
     },
     {
-      "change": "add (__file__-relative path to policy/preauth.md)",
-      "kind": "constant",
-      "name": "POLICY"
+      "change": "add",
+      "kind": "other",
+      "name": "POLICY",
+      "notes": "kind: constant; change: add (__file__-relative path to policy/preauth.md)"
     },
     {
-      "change": "add (the canonical refusal helper)",
+      "change": "add",
       "kind": "function",
-      "name": "refuse"
+      "name": "refuse",
+      "notes": "change: add (the canonical refusal helper)"
     }
   ],
   "notes": [
@@ -589,9 +604,9 @@
     "summary": "The owner signs one bounded envelope with ssh-keygen -Y sign -n rizzstack-preauth on their own machine. policy/allowed_signers is a frozen, read-only trust root (hash-pinned; empty in this slice so every envelope refuses). The production entry point check() reads it from the module's own base checkout and requires every key to match the frozen module constant OWNER_FINGERPRINTS; it takes no path or fingerprint override (only the private, test-only _check_for_tests does). The only code that starts a process is the frozen scripts/preauth_verify.py (committed at RED, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b): private names only, exactly one /usr/bin/ssh-keygen -Y verify with env PATH=/usr/bin:/bin and a bounded timeout, the signature in a 0600 temp file with a constant suffix; from r6 it also caps data and signature sizes and requires ssh-keygen's Good-signature stdout line for the issuer. The implementer's scripts/preauth.py parses the envelope, applies policy and decides one use from measured facts, refusing with a named reason on any doubt, including missing state; it imports _ssh_verify by name and has no process, filesystem-write or tempfile access, enforced by a strict AST allowlist (preauth_violations). From r6 it opens only two files, through two __file__-relative constants (policy/allowed_signers and policy/preauth.md, the policy each decision is bound to by sha256), never prints or writes to stdout/stderr, and refuses only with a literal reason from the closed set REFUSAL_REASONS through one canonical refuse() helper. This slice does not wire the checker into the gate or lane: that is the separate named slice preauth-wiring, whose frozen rules (whole-tree static scan plus a dynamic trap) hold now."
   },
   "review": {
-    "approved_at": "2026-11-28T00:43:19Z",
-    "approved_by": "Kyle (owner) typed: approved: 5c22cbf3 (preauth-envelope r6), 2026-11-27",
-    "contract_sha256": "5c22cbf361371616e12f056e29264e443e1b665f36d60de18bc4102e4d9f7b57",
+    "approved_at": "2026-11-28T01:45:26Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract_sha256": "c413827ed596969626234b6ea5d296a81d46f4df05f7787afe5ec12156601872",
     "status": "approved"
   },
   "risk": {
@@ -637,7 +652,8 @@
     "preauth-envelope draft 84d5fdb4 (r2)",
     "preauth-envelope draft 5120dd62 (r3)",
     "preauth-envelope draft 7d07b172 (r4)",
-    "preauth-envelope draft 2d0afeb9 (r5)"
+    "preauth-envelope draft 2d0afeb9 (r5)",
+    "preauth-envelope r6 5c22cbf3 (interfaces metadata normalised to the acdd/1 schema; no test or scope change)"
   ],
   "tdd": {
     "applicable": true
