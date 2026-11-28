@@ -1,0 +1,43 @@
+{
+  "id": "preauth-wiring",
+  "status": "requirements draft (not a contract; not hashed; nothing approved)",
+  "recorded_with": "preauth-envelope r5 (RED commit on red/preauth-envelope); extended at r6",
+  "depends_on": [
+    "gate-authority (S1)",
+    "preauth-envelope (S2)"
+  ],
+  "frozen_requirements": [
+    "The gate (.github/scripts/lease_tamper.py), the lane (scripts/merge_lane_v5.py) and every other file under .github/ and scripts/ use only preauth.check() and catch only preauth.PreauthRefused. No other preauth name (oracle_paths, load_envelope, read_trust_root, constants, _decide, _check_for_tests), no import of scripts/preauth_verify.py or its _ssh_verify, and no reference to the module object other than .check / .PreauthRefused.",
+    "No dynamic loading anywhere under .github/ or scripts/: no importlib, runpy, imp, pkgutil or zipimport import; no __import__, eval, exec, compile, spec_from_file_location, SourceFileLoader, exec_module, load_module, run_path or run_module; no sys.modules access; no getattr/hasattr/setattr/delattr with a computed name; no getattr on the preauth module at all.",
+    "Non-Python files under .github/ and scripts/ (workflows, shell) never import preauth, name preauth_verify, _ssh_verify or check_for_tests, or reach a preauth attribute inline.",
+    "tests/test_preauth_envelope.py::WiringFreezeTest (all four tests, including the whole-tree scan, the 22 wiring must-fail fixtures and the dynamic trap that makes every preauth name except check and PreauthRefused raise on the lane and gate paths) stays unchanged as a regression suite.",
+    "The lane and gate load preauth from the BASE checkout's scripts/ directory placed first on sys.path, so `from preauth_verify import _ssh_verify` resolves to the frozen, sha256-pinned scripts/preauth_verify.py; add a call-site test that the loaded verifier's file is that path and its sha256 equals the pin (never a module from the PR head, cwd or another sys.path entry).",
+    "Add a call-site test that check() is the one preauth entry on the merge and dispatch paths, with every fact measured by the lane itself (revocations, consumed uses, nonces, attempts, bees in flight, ancestry), never a caller-supplied trust root or pin.",
+    "Must land before any unattended T1/T3 use of envelopes; until then every owner approval stays a typed line.",
+    "Exceptions: the lane and gate treat any exception from check() other than PreauthRefused as a refusal and never print, log or post its text or traceback (exception text can carry data); they report only PreauthRefused.reason, which is one of the closed REFUSAL_REASONS."
+  ],
+  "r6_additions_from_grokchat_round5_advisory_high_2": {
+    "requirement": "Extend wiring_violations (or add a wiring rule in this slice) so each case below is refused, and add these cases verbatim as wiring must-fail fixtures. GROKCHAT demonstrated that after any legitimate `from scripts import preauth`, each reaches a forbidden preauth name while passing the r5 rule.",
+    "rules": [
+      "Flag any `.modules` attribute on any object (not only the literal `sys.modules`), so `import sys as s; s.modules[...]` is refused.",
+      "Flag any dotted chain through `scripts.preauth` (for example `import scripts; scripts.preauth.oracle_paths`); only `preauth.check` / `preauth.PreauthRefused` after a direct import stay allowed.",
+      "Flag `vars()` anywhere, and any `getattr`/`hasattr` whose target is not a plain local variable, including constant non-private names such as getattr(<module>, \"oracle_paths\").",
+      "Flag `from scripts import *` (and any star import under .github/ and scripts/).",
+      "Drive the dynamic trap test through an envelope/T3 decision path on both the lane and the gate (a T3 merge that consults check() with measured facts), not only lane.decide on minimal facts and the gate on a docs-only change."
+    ],
+    "cases": {
+      "sys_alias_modules.py": "import sys as system_modules_view\npre = system_modules_view.modules[\"preauth\"]\npre.oracle_paths(\".\")\n",
+      "getattr_constant_public.py": "import sys as s\ngetattr(s.modules[\"preauth\"], \"oracle_paths\")(\".\")\n",
+      "package_attr_chain.py": "import scripts\nscripts.preauth.oracle_paths(\".\")\n",
+      "vars_package.py": "import scripts\nvars(scripts)[\"preauth\"].oracle_paths(\".\")\n",
+      "from_scripts_star_pkg.py": "from scripts import *\npreauth.oracle_paths(\".\")\n"
+    }
+  },
+  "s1_gate_authority_advisories_recorded_here": {
+    "note": "From GROKCHAT round 5 on S1 (gate-authority f23d3ab3, approved-ready and unchanged). Recorded here so the wiring slice, which touches the same lane and gate files, picks them up; neither is in S1's frozen tests.",
+    "items": [
+      "The live rulesets protect only the default branch, so release/* branches are unprotected (direct push or force-push by any writer), and S1's AC-029 lets the lane merge into such a branch judged by that branch's own gate copy. Either restrict the lane to the repository's default branch (refuse any other base), or have the owner add a ruleset protecting release/* (deletion, non_fast_forward, pull_request, required checks, no bypass) before the lane serves those bases.",
+      "In the stale-gate compare check, treat entries with status \"copied\" or \"changed\" like \"renamed\": check both filename and previous_filename against the gate-code paths (.github/workflows/gate-authority.yml, .github/workflows/review-rerun.yml, .github/scripts/**), with a test for each status (S1's test covers renamed only)."
+    ]
+  }
+}

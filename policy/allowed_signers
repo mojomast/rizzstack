@@ -1,0 +1,10 @@
+# rizzstack preauth trust root: public keys only, one per line.
+#
+#   <principal> namespaces="rizzstack-preauth" <ssh-ed25519|sk-ssh-ed25519@openssh.com> <base64-key>
+#
+# Read-only for every implementer.  Its bytes are pinned by tests/test_preauth_envelope.py,
+# so adding a key needs a new owner-approved contract.  No cert-authority lines, no wildcard
+# or negated principals, one principal per line.  The private key never leaves the owner's
+# machine and is never on the Hermes host, the worker PC or the box.
+#
+# Empty on purpose: until the owner adds a key here, every envelope is refused.
