@@ -61,6 +61,7 @@ CONFIG_NAMES = frozenset({
 })
 HOOK_NAMES = frozenset({"sitecustomize.py", "usercustomize.py"})
 STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+TRUST_ROOT_BYTES = frozenset(range(0x20, 0x7f)) | {9, 10, 13}
 PRINCIPAL = re.compile(r"[A-Za-z0-9._@-]{1,64}")
 
 
@@ -215,25 +216,29 @@ def fingerprint_of(blob):
 def trust_fingerprints(raw, trusted):
     if not isinstance(raw, bytes):
         refuse("envelope_signers_invalid")
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        refuse("envelope_signers_invalid")
+    for value in raw:
+        if value not in TRUST_ROOT_BYTES:
+            refuse("envelope_signers_invalid")
     found = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+    for line in raw.split(b"\n"):
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        if b"\r" in line:
+            refuse("envelope_signers_invalid")
+        stripped = line.strip(b" \t")
+        if not stripped or stripped.startswith(b"#"):
             continue
         parts = stripped.split()
         if len(parts) < 4:
             refuse("envelope_signers_invalid")
-        if not principal_ok(parts[0]):
+        principal = parts[0].decode("ascii")
+        if not principal_ok(principal):
             refuse("envelope_signers_invalid")
-        if parts[1] != NAMESPACE_OPTION:
+        if parts[1].decode("ascii") != NAMESPACE_OPTION:
             refuse("envelope_signers_invalid")
-        if parts[2] not in KEY_TYPES:
+        if parts[2].decode("ascii") not in KEY_TYPES:
             refuse("envelope_signers_invalid")
-        found.append(fingerprint_of(parts[3]))
+        found.append(fingerprint_of(parts[3].decode("ascii")))
     if not found:
         refuse("envelope_signer_untrusted")
     for item in found:
@@ -297,6 +302,21 @@ def normalize_path(value):
     if not result:
         refuse("envelope_oracle_unproven")
     return "/".join(result)
+
+
+def normalized_map(measured):
+    result = {}
+    for key, value in measured.items():
+        if not isinstance(key, str) or "\\" in key:
+            refuse("envelope_oracle_unproven")
+        if not (isinstance(value, str) and len(value) in (40, 64)
+                and all(ch in "0123456789abcdefABCDEF" for ch in value)):
+            refuse("envelope_oracle_unproven")
+        path = normalize_path(key)
+        if path in result:
+            refuse("envelope_oracle_unproven")
+        result[path] = value
+    return result
 
 
 def is_oracle(path, test_files):
@@ -423,12 +443,14 @@ def _decide(data, signature, allowed_signers, allowed_signers_bytes, policy_byte
         test_files = entry.get("test_files", [])
         if not isinstance(test_files, list):
             test_files = []
-        old_paths = oracle_paths(old.keys(), test_files)
-        new_paths = oracle_paths(new.keys(), test_files)
+        old_map = normalized_map(old)
+        new_map = normalized_map(new)
+        old_paths = oracle_paths(old_map.keys(), test_files)
+        new_paths = oracle_paths(new_map.keys(), test_files)
         if old_paths != new_paths:
             refuse("envelope_oracle_changed")
         for path in old_paths:
-            if old.get(path) != new.get(path):
+            if old_map.get(path) != new_map.get(path):
                 refuse("envelope_oracle_changed")
     return {
         "ok": True,
