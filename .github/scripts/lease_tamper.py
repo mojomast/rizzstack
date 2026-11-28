@@ -2142,7 +2142,7 @@ def _tier_always_three(path):
     if _tier_is_test_path(path):
         return False
     normal = _tier_normalise(path).lower()
-    if not normal.endswith((".py", ".pyi", ".ts", ".tsx", ".js", ".mjs")):
+    if not normal.endswith((".py", ".pyi", ".ts", ".tsx", ".js", ".mjs", ".jsx", ".cjs", ".mts")):
         return False
     return any(fnmatch.fnmatchcase(normal, pattern) for pattern in TIER_ALWAYS_THREE)
 
