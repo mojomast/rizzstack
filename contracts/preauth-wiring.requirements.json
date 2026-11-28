@@ -1,0 +1,15 @@
+{
+  "id": "preauth-wiring",
+  "status": "requirements draft (not a contract; not hashed; nothing approved)",
+  "recorded_with": "preauth-envelope r5 (RED commit on red/preauth-envelope)",
+  "depends_on": ["gate-authority (S1)", "preauth-envelope (S2)"],
+  "frozen_requirements": [
+    "The gate (.github/scripts/lease_tamper.py), the lane (scripts/merge_lane_v5.py) and every other file under .github/ and scripts/ use only preauth.check() and catch only preauth.PreauthRefused. No other preauth name (oracle_paths, load_envelope, read_trust_root, constants, _decide, _check_for_tests), no import of scripts/preauth_verify.py or its _ssh_verify, and no reference to the module object other than .check / .PreauthRefused.",
+    "No dynamic loading anywhere under .github/ or scripts/: no importlib, runpy, imp, pkgutil or zipimport import; no __import__, eval, exec, compile, spec_from_file_location, SourceFileLoader, exec_module, load_module, run_path or run_module; no sys.modules access; no getattr/hasattr/setattr/delattr with a computed name; no getattr on the preauth module at all.",
+    "Non-Python files under .github/ and scripts/ (workflows, shell) never import preauth, name preauth_verify, _ssh_verify or check_for_tests, or reach a preauth attribute inline.",
+    "tests/test_preauth_envelope.py::WiringFreezeTest (all four tests, including the whole-tree scan, the 22 wiring must-fail fixtures and the dynamic trap that makes every preauth name except check and PreauthRefused raise on the lane and gate paths) stays unchanged as a regression suite.",
+    "The lane and gate load preauth from the BASE checkout's scripts/ directory placed first on sys.path, so `from preauth_verify import _ssh_verify` resolves to the frozen, sha256-pinned scripts/preauth_verify.py; add a call-site test that the loaded verifier's file is that path and its sha256 equals the pin (never a module from the PR head, cwd or another sys.path entry).",
+    "Add a call-site test that check() is the one preauth entry on the merge and dispatch paths, with every fact measured by the lane itself (revocations, consumed uses, nonces, attempts, bees in flight, ancestry), never a caller-supplied trust root or pin.",
+    "Must land before any unattended T1/T3 use of envelopes; until then every owner approval stays a typed line."
+  ]
+}

@@ -14,12 +14,20 @@ private, test-only ``_check_for_tests()``, which accepts a temporary trust root 
 never calls it, and the gate and lane may reference only ``check`` and ``PreauthRefused`` (frozen
 here for ``preauth-wiring``).
 
-Every checker call in this file runs with process creation recorded: the only program the
-checker may start is ``ssh-keygen -Y verify`` with a bounded timeout, never ``-Y sign``.  A
-static AST rule (``process_violations``) additionally pins the one process call to a literal
-``ssh-keygen -Y verify`` argv, so dead or unexercised code cannot sign either.
+r5 structure: the only code that starts a process is the frozen ``scripts/preauth_verify.py``
+(committed at RED and pinned by sha256 here and in the contract).  It runs exactly one
+``/usr/bin/ssh-keygen -Y verify`` with a constant environment and a bounded timeout, and every
+name it defines is private.  The implementer's ``scripts/preauth.py`` (envelope parsing,
+policy, facts) imports its single entry point ``_ssh_verify`` by name and may have no process,
+filesystem-write or tempfile access at all: ``preauth_violations`` is a strict AST allowlist
+over it.  ``process_violations`` (the r4 one-process rule, hardened against GROKCHAT's round-4
+bypasses) still pins the verify module and refuses every earlier stub.
 
-Wiring the checker into the gate/lane is the separate named slice ``preauth-wiring``.
+Every checker call in this file runs with process creation recorded: the only program ever
+started is ``/usr/bin/ssh-keygen -Y verify``, never ``-Y sign``.
+
+Wiring the checker into the gate/lane is the separate named slice ``preauth-wiring``; its frozen
+rules (``WiringFreezeTest``) scan every file under .github/ and scripts/ now.
 
 Every key in these tests is generated in a temporary directory at run time.
 
@@ -37,8 +45,12 @@ import json
 import os
 import re
 import shutil
+import contextlib
+import io
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,6 +61,11 @@ MODULE = ROOT / "scripts" / "preauth.py"
 SIGNERS = ROOT / "policy" / "allowed_signers"
 SCHEMA = ROOT / "schemas" / "preauth.schema.json"
 PROCESS_FIXTURES = ROOT / "tests" / "fixtures" / "preauth"
+SCRIPTS = ROOT / "scripts"
+VERIFY_MODULE = SCRIPTS / "preauth_verify.py"
+#: The frozen verifier.  Changing scripts/preauth_verify.py needs a new owner-approved contract.
+PREAUTH_VERIFY_SHA256 = "181d5ab1ebb23d7bb27d55ab44e57f6c2e213b834c4a95ee5e226075935143a9"  # gitleaks:allow (sha256 of a committed file, not a secret)
+VERIFY_ENTRY = "_ssh_verify"
 
 #: The frozen trust root.  Changing policy/allowed_signers needs a new owner-approved contract.
 ALLOWED_SIGNERS_SHA256 = "be7d243277ad0073c9d03dc09355f1b769824cde7c2ed0b662c0c190d19973ee"
@@ -67,7 +84,14 @@ ENVELOPE_ID = "pa-20261128-01"
 NOW = datetime(2026, 11, 28, 15, 0, tzinfo=timezone.utc)
 
 
+def _scripts_on_path():
+    # preauth.py imports the frozen verifier by name, as the lane does when it runs from scripts/
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+
+
 def load_module():
+    _scripts_on_path()
     spec = importlib.util.spec_from_file_location("preauth_under_test", MODULE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -158,6 +182,7 @@ class ProcessRecorder:
         self.case, self.fail, self.calls, self.timeouts = case, fail, [], []
         self.envs, self.executables = [], []
         self.inside = False
+        self.hook = None
         self._real_popen = subprocess.Popen
 
     def popen(self, args, *a, **k):
@@ -169,6 +194,8 @@ class ProcessRecorder:
             raise FileNotFoundError(2, "No such file or directory", argv[0])
         if self.fail == "timeout":
             return _HangingProcess(argv, self)
+        if self.hook is not None:
+            self.hook(argv)
         self.inside = True  # the recorded Popen may itself use os.posix_spawn/fork_exec
         try:
             return self._real_popen(args, *a, **k)
@@ -648,6 +675,7 @@ def _dotted_root(node):
 
 
 def _load_copy(tree, name):
+    _scripts_on_path()
     spec = importlib.util.spec_from_file_location(name, tree / "scripts" / "preauth.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -681,6 +709,7 @@ class ProductionEntryPointTest(unittest.TestCase):
         (root / "scripts").mkdir()
         (root / "policy").mkdir()
         shutil.copyfile(MODULE, root / "scripts" / "preauth.py")
+        shutil.copyfile(VERIFY_MODULE, root / "scripts" / "preauth_verify.py")
         (root / "policy" / "allowed_signers").write_text("".join(l + "\n" for l in signer_lines))
         return root
 
@@ -743,8 +772,10 @@ class ProductionEntryPointTest(unittest.TestCase):
         for name, node in functions.items():
             args = {a.arg for a in node.args.args + node.args.kwonlyargs + node.args.posonlyargs}
             if args & {"trusted_fingerprints", "allowed_signers"} and not name.startswith("_"):
-                if name != "verify_signature" or "trusted_fingerprints" in args:
-                    self.fail("public %s takes a trust-root override" % name)
+                self.fail("public %s takes a trust-root override" % name)
+        # r5: the verify entry point is private (no public verify_signature or similar)
+        verifying = sorted(n for n in functions if not n.startswith("_") and re.search("verif|signature", n))
+        self.assertEqual(verifying, [], "the verify entry point must be private")
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 func = node.func
@@ -758,31 +789,229 @@ class ProductionEntryPointTest(unittest.TestCase):
 
 
 
+# --------------------------------------------------------------- wiring freeze (preauth-wiring, r5)
+WIRING_ALLOWED = {"check", "PreauthRefused"}
+WIRING_FIXTURES = PROCESS_FIXTURES / "wiring_must_fail"
+WIRING_EXEMPT = {MODULE.resolve(), VERIFY_MODULE.resolve()}
+PRIVATE_MARKERS = ("check_for_tests", VERIFY_ENTRY, "preauth_verify", "_decide")
+DYNAMIC_IMPORT = {"importlib", "runpy", "imp", "pkgutil", "zipimport"}
+DYNAMIC_CODE = {"__import__", "eval", "exec", "compile", "execfile", "spec_from_file_location",
+                "SourceFileLoader", "exec_module", "load_module", "run_path", "run_module"}
+#: as attributes (``re.compile`` is fine; a loader's ``exec_module`` is not)
+DYNAMIC_ATTRS = DYNAMIC_CODE - {"compile", "eval", "exec"}
+WIRING_TEXT = re.compile(r"\bimport\s+(scripts\.)?preauth\b|\bfrom\s+(scripts\.preauth|scripts|preauth)\s+import\b|"
+                         r"preauth_verify|check_for_tests|_ssh_verify|\bpreauth\.(?!md\b|py\b)[A-Za-z_]")
+
+
+def wiring_violations(source):
+    """Violations of the frozen wiring rule for one Python file under .github/ or scripts/."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return ["syntax_error:%s" % exc.lineno]
+    out, aliases = [], set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if "preauth_verify" in parts:
+                    out.append("verify_import")
+                elif parts[-1] == "preauth":
+                    aliases.add(alias.asname or alias.name)
+                if parts[0] in DYNAMIC_IMPORT:
+                    out.append("dynamic_import:" + parts[0])
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            parts = mod.split(".")
+            if parts[0] in DYNAMIC_IMPORT:
+                out.append("dynamic_import:" + parts[0])
+            if "preauth_verify" in parts or any(a.name == "preauth_verify" for a in node.names):
+                out.append("verify_import")
+            elif parts[-1] == "preauth":
+                for alias in node.names:
+                    if alias.name not in WIRING_ALLOWED:
+                        out.append("preauth_name:" + alias.name)
+            else:
+                for alias in node.names:
+                    if alias.name == "preauth":
+                        aliases.add(alias.asname or alias.name)
+    parents = _parents(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            dotted = _dotted(node)
+            if dotted in aliases:
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Attribute) and parent.value is node):
+                    out.append("preauth_module_value:" + dotted)
+                elif parent.attr not in WIRING_ALLOWED:
+                    out.append("preauth_name:" + parent.attr)
+        if isinstance(node, ast.Name):
+            if node.id in DYNAMIC_CODE:
+                out.append("dynamic_code:" + node.id)
+            if any(marker in node.id for marker in PRIVATE_MARKERS):
+                out.append("private_name:" + node.id)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in DYNAMIC_ATTRS:
+                out.append("dynamic_code:" + node.attr)
+            if node.attr == "modules" and _dotted(node.value) == "sys":
+                out.append("sys_modules")
+            if any(marker in node.attr for marker in PRIVATE_MARKERS):
+                out.append("private_name:" + node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if any(marker in node.value for marker in PRIVATE_MARKERS):
+                out.append("private_name_string")
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ("getattr", "hasattr", "setattr", "delattr", "vars")):
+            target = node.args[0] if node.args else None
+            if target is not None and _dotted(target) in aliases:
+                out.append("preauth_getattr")
+            if node.func.id != "vars" and (len(node.args) < 2 or not isinstance(node.args[1], ast.Constant)):
+                out.append("getattr_computed")
+    return sorted(set(out))
+
+
+def wiring_text_violations(text):
+    """Violations of the frozen wiring rule for a non-Python file (workflows, shell, docs)."""
+    return ["preauth_in_text"] if WIRING_TEXT.search(text) else []
+
+
+def _wiring_targets():
+    for top in (ROOT / ".github", ROOT / "scripts"):
+        for path in sorted(top.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.resolve() not in WIRING_EXEMPT:
+                yield path
+
+
+def _trapped_preauth(record):
+    """A stand-in preauth module: check and PreauthRefused work, every other name raises."""
+    module = types.ModuleType("preauth")
+
+    class PreauthRefused(Exception):
+        pass
+
+    def check(*args, **kwargs):
+        record.append(("allowed", "check"))
+        error = PreauthRefused("preauth-wiring trap")
+        error.reason = "envelope_signer_untrusted"
+        raise error
+
+    def trap(name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        record.append(("forbidden", name))
+        raise AttributeError("preauth-wiring freeze: only check and PreauthRefused may be used, not " + name)
+
+    module.check, module.PreauthRefused = check, PreauthRefused
+    module.__getattr__ = trap
+    return module
+
+
 class WiringFreezeTest(unittest.TestCase):
     """Frozen for the separate slice preauth-wiring; holds at RED and must keep holding."""
 
     def test_gate_and_lane_reference_only_check_from_preauth(self):
         """Frozen for preauth-wiring: the gate and lane may use preauth.check and PreauthRefused only."""
         for path in (ROOT / ".github" / "scripts" / "lease_tamper.py", ROOT / "scripts" / "merge_lane_v5.py"):
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            aliases = {"preauth"}
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name.split(".")[-1] == "preauth":
-                            aliases.add(alias.asname or alias.name)
-                elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "preauth":
-                    for alias in node.names:
-                        self.assertIn(alias.name, ("check", "PreauthRefused"), (path.name, alias.name))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and _dotted_root(node) in aliases:
-                    self.assertIn(node.attr, ("check", "PreauthRefused"), (path.name, node.attr))
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    self.assertNotIn("_check_for_tests", node.value, path.name)
-                    self.assertNotIn("check_for_tests", node.value, path.name)
-                if isinstance(node, ast.Name):
-                    self.assertNotIn(node.id, ("_check_for_tests", "check_for_tests", "_decide"), path.name)
+            self.assertEqual(wiring_violations(path.read_text(encoding="utf-8")), [], path.name)
+
+    def test_every_file_under_github_and_scripts_obeys_the_wiring_rule(self):
+        scanned = 0
+        for path in _wiring_targets():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            scanned += 1
+            got = wiring_violations(text) if path.suffix == ".py" else wiring_text_violations(text)
+            self.assertEqual(got, [], str(path.relative_to(ROOT)))
+        self.assertGreater(scanned, 5)
+
+    #: each wiring fixture and the violation it must raise (GROKCHAT round 4 first)
+    WIRING_MUST_FAIL = {
+        "control_direct.py": "preauth_name:verify_signature",
+        "from_pkg_alias.py": "preauth_name:verify_signature",
+        "importlib_load.py": "dynamic_import:importlib",
+        "getattr_name.py": "preauth_getattr",
+        "private_via_getattr.py": "preauth_getattr",
+        "dotted_import.py": "preauth_name:oracle_paths",
+        "from_import_name.py": "preauth_name:oracle_paths",
+        "star_import.py": "preauth_name:*",
+        "module_value.py": "preauth_module_value:preauth",
+        "module_rebind.py": "preauth_module_value:preauth",
+        "getattr_constant_private.py": "preauth_getattr",
+        "getattr_computed_elsewhere.py": "getattr_computed",
+        "verify_module_import.py": "verify_import",
+        "verify_module_dotted.py": "verify_import",
+        "private_name_string.py": "private_name_string",
+        "private_name.py": "private_name:_ssh_verify",
+        "runpy_load.py": "dynamic_import:runpy",
+        "dunder_import.py": "dynamic_code:__import__",
+        "exec_code.py": "dynamic_code:exec",
+        "sys_modules.py": "sys_modules",
+        "workflow_inline.yml": "preauth_in_text",
+        "shell_inline.sh": "preauth_in_text",
+    }
+
+    def test_wiring_must_fail_fixtures_are_caught(self):
+        found = sorted(p.name for p in WIRING_FIXTURES.iterdir() if p.is_file())
+        self.assertEqual(found, sorted(self.WIRING_MUST_FAIL))
+        for name, code in self.WIRING_MUST_FAIL.items():
+            text = (WIRING_FIXTURES / name).read_text(encoding="utf-8")
+            got = wiring_violations(text) if name.endswith(".py") else wiring_text_violations(text)
+            self.assertIn(code, got, name)
+
+    def test_preauth_names_other_than_check_raise_on_the_lane_and_gate_paths(self):
+        record = []
+        trapped = _trapped_preauth(record)
+        saved = {name: sys.modules.get(name) for name in ("preauth", "scripts.preauth")}
+        sys.modules["preauth"] = sys.modules["scripts.preauth"] = trapped
+        try:
+            # the trap itself: a forbidden name raises and is recorded, check is allowed
+            probe = types.ModuleType("probe")
+            exec("import preauth\ntry:\n    preauth.oracle_paths\nexcept AttributeError:\n    pass\n", probe.__dict__)
+            self.assertEqual(record, [("forbidden", "oracle_paths")])
+            del record[:]
+            lane = self._load(ROOT / "scripts" / "merge_lane_v5.py", "lane_wiring_trap")
+            gate = self._load(ROOT / ".github" / "scripts" / "lease_tamper.py", "gate_wiring_trap")
+            for facts in ({}, {"pr": {"number": 12, "state": "OPEN", "head": "a" * 40, "files": []},
+                               "class": getattr(lane, "NON_SLICE", "non-slice"), "reviews": [], "checks": [],
+                               "required_checks": [], "lease_tamper": {"ran": True, "ok": True}}):
+                with contextlib.suppress(Exception):
+                    lane.decide(facts)
+            repo, base, head = self._git_repo()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), \
+                    contextlib.suppress(Exception, SystemExit):
+                gate.main(["--repo", str(repo), "--base", base, "--head", head, "--quiet"], environ={})
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        self.assertEqual([name for kind, name in record if kind == "forbidden"], [])
+
+    def _load(self, path, name):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _git_repo(self):
+        repo = Path(tempfile.mkdtemp(prefix="preauth-wiring-"))
+        self.addCleanup(shutil.rmtree, repo, True)
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        subprocess.run(git[:3] + ["init", "-q"], check=True, capture_output=True)
+        (repo / "README.md").write_text("base\n")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-q", "-m", "base"], check=True, capture_output=True)
+        base = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        (repo / "docs.md").write_text("change\n")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True)
+        subprocess.run(git + ["commit", "-q", "-m", "docs: change"], check=True, capture_output=True)
+        head = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        return repo, base, head
 
 
 # --------------------------------------------------------------- static process rule (r4: allowlists)
@@ -843,6 +1072,30 @@ def _write_mode(call):
     if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)):
         return True
     return any(ch in mode.value for ch in "wax+")
+
+
+#: Module attributes that may be used as plain values (everything else must be called directly).
+PROCESS_VALUE_ATTRS = {"os.path", "os.sep", "re.ASCII", "re.IGNORECASE"}
+
+
+def _parents(tree):
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return parents
+
+
+def _is_call_func(node, parents):
+    parent = parents.get(id(node))
+    return isinstance(parent, ast.Call) and parent.func is node
+
+
+def _in_except_type(node, parents):
+    child, parent = node, parents.get(id(node))
+    while isinstance(parent, ast.Tuple):
+        child, parent = parent, parents.get(id(parent))
+    return isinstance(parent, ast.ExceptHandler) and parent.type is child
 
 
 def process_violations(source):
@@ -950,6 +1203,31 @@ def process_violations(source):
             func = node.func
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "subprocess":
                 calls.append(node)
+    # r5 (GROKCHAT round 4): no value use of a module attribute, no decorators, class keywords,
+    # dunder defs, match or format; tempfile only with a constant suffix
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.decorator_list:
+            out.append("decorator")
+        if isinstance(node, ast.ClassDef) and node.keywords:
+            out.append("class_keyword")
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("__") and node.name.endswith("__")):
+            out.append("dunder_def:" + node.name)
+        if isinstance(node, ast.Match):
+            out.append("match_statement")
+        if isinstance(node, ast.Attribute) and node.attr in ("format", "format_map"):
+            out.append("format_attr:" + node.attr)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in modules:
+            dotted = node.value.id + "." + node.attr
+            if not (dotted in PROCESS_VALUE_ATTRS or _is_call_func(node, parents)
+                    or _in_except_type(node, parents)):
+                out.append("module_attr_value:" + dotted)
+        if isinstance(node, ast.Call) and _dotted(node.func) in ("tempfile.NamedTemporaryFile",
+                                                                 "tempfile.TemporaryDirectory"):
+            kws = node.keywords
+            if node.args or len(kws) != 1 or kws[0].arg != "suffix" or not (
+                    isinstance(kws[0].value, ast.Constant) and isinstance(kws[0].value.value, str)):
+                out.append("tempfile_args")
     if len(calls) != 1:
         out.append("process_calls:%d" % len(calls))
     for call in calls:
@@ -1025,6 +1303,19 @@ class ProcessRuleTest(unittest.TestCase):
         "nested_import": "nested_import",
     }
 
+    #: GROKCHAT round-4 stubs, committed verbatim; each must be refused for its own bypass.
+    MUST_FAIL_R5 = {
+        "run_alias": ("module_attr_value:subprocess.run",),
+        "walrus_run": ("module_attr_value:subprocess.run",),
+        "dict_run": ("module_attr_value:subprocess.run",),
+        "default_arg_run": ("module_attr_value:subprocess.run",),
+        "match_capture": ("match_statement", "module_attr_value:subprocess.run"),
+        "decorator_metaclass": ("decorator", "class_keyword", "dunder_def:__iter__"),
+        "sign_concat_alias": ("module_attr_value:subprocess.run",),
+        "ntf_pth": ("tempfile_args",),
+        "format_read": ("format_attr:format",),
+    }
+
     def stub(self, name, folder="must_fail"):
         return (PROCESS_FIXTURES / folder / (name + ".py")).read_text(encoding="utf-8")
 
@@ -1034,7 +1325,7 @@ class ProcessRuleTest(unittest.TestCase):
 
     def test_must_fail_stubs_are_refused(self):
         found = sorted(p.stem for p in (PROCESS_FIXTURES / "must_fail").glob("*.py"))
-        self.assertEqual(found, sorted(set(self.MUST_FAIL) | set(self.MUST_FAIL_R4)))
+        self.assertEqual(found, sorted(set(self.MUST_FAIL) | set(self.MUST_FAIL_R4) | set(self.MUST_FAIL_R5)))
         for name in self.MUST_FAIL:
             self.assertNotEqual(process_violations(self.stub(name)), [], name)
 
@@ -1059,9 +1350,419 @@ class ProcessRuleTest(unittest.TestCase):
             self.assertTrue(extra, name)
             self.assertLessEqual(len(extra), 12, (name, extra))
 
-    def test_preauth_module_obeys_the_rule(self):
+    def test_round_four_bypass_stubs_are_refused_for_their_own_reason(self):
+        safe = set((PROCESS_FIXTURES / "safe_verify.py").read_text(encoding="utf-8").splitlines())
+        for name, codes in self.MUST_FAIL_R5.items():
+            source = self.stub(name)
+            self.assertIn("/usr/bin/ssh-keygen", source, name)
+            extra = [line for line in source.splitlines() if line not in safe]
+            self.assertTrue(extra, name)
+            self.assertLessEqual(len(extra), 12, (name, extra))
+            got = process_violations(source)
+            for code in codes:
+                self.assertIn(code, got, name)
+
+    def test_frozen_verify_module_obeys_the_rule(self):
+        # r5: the one-process rule applies to the frozen verifier; preauth.py starts no process at all
+        self.assertTrue(VERIFY_MODULE.is_file(), "missing scripts/preauth_verify.py")
+        self.assertEqual(process_violations(VERIFY_MODULE.read_text(encoding="utf-8")), [])
+
+
+# --------------------------------------------------------------- r5: strict allowlist over preauth.py
+#: Plain ``import x`` allowed in preauth.py (top level, no alias).  No os, subprocess or tempfile.
+PREAUTH_IMPORTS = {"json", "hashlib", "base64", "binascii", "re"}
+#: ``from x import y`` allowed only for these names; the frozen verifier's single entry point by name.
+PREAUTH_FROM = {"__future__": {"annotations"}, "datetime": {"datetime", "timezone", "timedelta"},
+                "preauth_verify": {VERIFY_ENTRY}}
+PREAUTH_MODULE_ATTRS = {
+    "json": {"loads", "dumps", "JSONDecodeError"},
+    "hashlib": {"sha256"},
+    "base64": {"b64decode", "b64encode"},
+    "binascii": {"Error"},
+    "re": {"compile", "fullmatch", "match", "search", "escape", "ASCII", "IGNORECASE"},
+}
+#: Module attributes usable as plain values (flags, and exception classes outside an except clause).
+PREAUTH_VALUE_ATTRS = {"re.ASCII", "re.IGNORECASE", "json.JSONDecodeError", "binascii.Error"}
+#: the test-only entry point and the shared private decision core check() and it both call
+PREAUTH_PRIVATE_DEFS = {"_check_for_tests", "_decide"}
+PREAUTH_DUNDER_NAMES = {"__file__"}
+PREAUTH_BANNED_NAMES = BANNED_NAMES | {"type", "object", "super", "property", "classmethod", "staticmethod",
+                                       "format", "dir", "hasattr", "open_code", "__build_class__"}
+PREAUTH_BANNED_ATTRS = re.compile(BANNED_ATTRS.pattern[:-2] + r"|format|format_map|mro|modules|tb_next|"
+                                  r"ag_code|cr_code|f_lineno|f_trace|func_globals)$")
+PREAUTH_PROTECTED = {"open", "isinstance", "len", "str", "int", "bool", "dict", "list", "set", "tuple",
+                     "frozenset", "sorted", "any", "all", "min", "max", "Exception", "print"}
+PREAUTH_OPEN_MODES = {"r", "rb"}
+PREAUTH_MAX_OPENS = 2
+
+
+def preauth_violations(source):
+    """Violations of the r5 preauth.py allowlist; [] means no process, write, tempfile or module escape."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return ["syntax_error:%s" % exc.lineno]
+    out, modules, imported = [], set(), set()
+    top = set(id(n) for n in tree.body)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in top:
+            out.append("nested_import")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in PREAUTH_IMPORTS:
+                    out.append("import_not_allowed:" + alias.name)
+                elif alias.asname:
+                    out.append("import_alias:" + alias.name)
+                else:
+                    modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "preauth_verify" and node.level == 0 and [(a.name, a.asname) for a in node.names] != [
+                    (VERIFY_ENTRY, None)]:
+                out.append("verify_import")
+            allowed = PREAUTH_FROM.get(mod) if node.level == 0 else None
+            for alias in node.names:
+                if allowed is None or alias.name not in allowed or alias.asname:
+                    out.append("import_not_allowed:%s%s.%s" % ("." * node.level, mod, alias.name))
+                else:
+                    imported.add(alias.name)
+    bound = modules | imported | PREAUTH_PROTECTED
+    parents = _parents(tree)
+    opens = 0
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr,
+                             ast.comprehension)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            targets = [item.optional_vars for item in node.items if item.optional_vars is not None]
+        elif isinstance(node, ast.Delete):
+            targets = node.targets
+        elif isinstance(node, ast.arg) and node.arg in bound:
+            out.append("rebind:" + node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name in bound:
+            out.append("rebind:" + node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            out.append("global_statement")
+        elif isinstance(node, ast.Match):
+            out.append("match_statement")
+        elif isinstance(node, ast.AsyncFunctionDef):
+            out.append("async_def")
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name) and sub.id in bound:
+                    out.append("rebind:" + sub.id)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.decorator_list:
+                out.append("decorator")
+            if node.name in bound:
+                out.append("rebind:" + node.name)
+            if node.name.startswith("_") and node.name not in PREAUTH_PRIVATE_DEFS:
+                out.append("private_def:" + node.name)
+        if isinstance(node, ast.ClassDef):
+            if node.keywords:
+                out.append("class_keyword")
+            if not (len(node.bases) == 1 and isinstance(node.bases[0], ast.Name) and node.bases[0].id == "Exception"):
+                out.append("class_base")
+            for item in node.body:
+                if not (isinstance(item, ast.Pass) or (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant)
+                                                       and isinstance(item.value.value, str))):
+                    out.append("class_body")
+        if isinstance(node, ast.Name):
+            if node.id in PREAUTH_BANNED_NAMES:
+                out.append("banned_name:" + node.id)
+            if node.id.startswith("__") and node.id not in PREAUTH_DUNDER_NAMES:
+                out.append("dunder_name:" + node.id)
+            if node.id in modules:
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Attribute) and parent.value is node):
+                    out.append("module_reference:" + node.id)
+                elif parent.attr not in PREAUTH_MODULE_ATTRS.get(node.id, set()):
+                    out.append("module_attr:%s.%s" % (node.id, parent.attr))
+                elif not ("%s.%s" % (node.id, parent.attr) in PREAUTH_VALUE_ATTRS
+                          or _is_call_func(parent, parents) or _in_except_type(parent, parents)):
+                    out.append("module_attr_value:%s.%s" % (node.id, parent.attr))
+            if node.id == "open":
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    out.append("open_reference")
+                else:
+                    opens += 1
+                    out.extend(_preauth_open(parent))
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_"):
+                out.append("private_or_dunder_attr:" + node.attr)
+            if PREAUTH_BANNED_ATTRS.match(node.attr):
+                out.append("banned_attr:" + node.attr)
+    if opens > PREAUTH_MAX_OPENS:
+        out.append("open_calls:%d" % opens)
+    return sorted(set(out))
+
+
+def _preauth_open(call):
+    mode = call.args[1] if len(call.args) >= 2 else None
+    out = []
+    if len(call.args) > 2:
+        out.append("open_args")
+    for kw in call.keywords:
+        if kw.arg == "mode":
+            mode = kw.value
+        elif kw.arg != "encoding":
+            out.append("write_mode_open" if kw.arg in (None, "opener") else "open_args")
+    if mode is None or not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)):
+        out.append("open_mode_not_literal")
+    elif mode.value not in PREAUTH_OPEN_MODES:
+        out.append("write_mode_open")
+    return out
+
+
+class PreauthRuleTest(unittest.TestCase):
+    """r5: preauth.py is parsing and policy only; the rule is a strict allowlist, not a denylist."""
+
+    #: preauth.py-shaped stubs (safe_preauth.py plus a bypass), each with the violation it must raise
+    MUST_FAIL = {
+        "module_alias": "module_reference:re",
+        "walrus_alias": "module_reference:re",
+        "dict_alias": "module_reference:re",
+        "default_arg_alias": "module_reference:re",
+        "match_capture": "match_statement",
+        "decorator_def": "decorator",
+        "class_metaclass": "class_keyword",
+        "dunder_def": "private_def:__iter__",
+        "split_string_sign": "module_attr:re.enum",
+        "ntf_pth": "import_not_allowed:tempfile",
+        "format_leak": "banned_attr:format",
+        "format_map_leak": "banned_attr:format_map",
+        "import_subprocess": "import_not_allowed:subprocess",
+        "import_os": "import_not_allowed:os",
+        "import_datetime_module": "import_not_allowed:datetime",
+        "verify_module_import": "import_not_allowed:preauth_verify",
+        "verify_import_extra": "verify_import",
+        "verify_import_alias": "verify_import",
+        "relative_import": "import_not_allowed:..preauth_verify",
+        "star_import": "import_not_allowed:json.*",
+        "json_decoder_chain": "module_attr:json.decoder",
+        "re_enum_chain": "module_attr:re.enum",
+        "module_attr_value": "module_attr_value:json.loads",
+        "nested_import": "nested_import",
+        "getattr_computed": "banned_name:getattr",
+        "eval_code": "banned_name:eval",
+        "exec_code": "banned_name:exec",
+        "compile_code": "banned_name:compile",
+        "dunder_import": "dunder_name:__import__",
+        "dunder_attr": "private_or_dunder_attr:__globals__",
+        "private_attr": "private_or_dunder_attr:_private",
+        "frame_walk": "banned_attr:gi_frame",
+        "breakpoint_hook": "banned_name:breakpoint",
+        "help_pager": "banned_name:help",
+        "type_three_arg": "banned_name:type",
+        "builtins_name": "dunder_name:__builtins__",
+        "rebind_module": "rebind:json",
+        "rebind_entry": "rebind:_ssh_verify",
+        "rebind_in_comprehension": "rebind:re",
+        "global_statement": "global_statement",
+        "private_def": "private_def:_helper",
+        "class_base": "class_base",
+        "class_body": "class_body",
+        "class_decorator": "decorator",
+        "write_open": "write_mode_open",
+        "append_open": "write_mode_open",
+        "open_computed_mode": "open_mode_not_literal",
+        "open_without_mode": "open_mode_not_literal",
+        "open_opener": "write_mode_open",
+        "open_reference": "open_reference",
+        "three_opens": "open_calls:3",
+    }
+
+    def stub(self, name):
+        return (PROCESS_FIXTURES / "preauth_must_fail" / (name + ".py")).read_text(encoding="utf-8")
+
+    def test_safe_preauth_stub_passes_the_rule(self):
+        self.assertEqual(preauth_violations((PROCESS_FIXTURES / "safe_preauth.py").read_text(encoding="utf-8")), [])
+
+    def test_every_preauth_stub_is_refused_for_its_own_reason(self):
+        found = sorted(p.stem for p in (PROCESS_FIXTURES / "preauth_must_fail").glob("*.py"))
+        self.assertEqual(found, sorted(self.MUST_FAIL))
+        safe = set((PROCESS_FIXTURES / "safe_preauth.py").read_text(encoding="utf-8").splitlines())
+        for name, code in self.MUST_FAIL.items():
+            source = self.stub(name)
+            extra = [line for line in source.splitlines() if line not in safe]
+            self.assertTrue(extra, name)
+            self.assertLessEqual(len(extra), 12, (name, extra))
+            self.assertIn(code, preauth_violations(source), name)
+
+    def test_every_earlier_process_stub_is_refused_by_the_preauth_rule(self):
+        stubs = sorted((PROCESS_FIXTURES / "must_fail").glob("*.py"))
+        self.assertGreaterEqual(len(stubs), 54)
+        for path in stubs + [PROCESS_FIXTURES / "safe_verify.py"]:
+            self.assertNotEqual(preauth_violations(path.read_text(encoding="utf-8")), [], path.name)
+
+    def test_the_frozen_verifier_could_not_live_in_preauth_py(self):
+        # the process code is only allowed in the frozen file; the same code in preauth.py is refused
+        got = preauth_violations(VERIFY_MODULE.read_text(encoding="utf-8"))
+        self.assertIn("import_not_allowed:subprocess", got)
+        self.assertIn("import_not_allowed:tempfile", got)
+
+    def test_preauth_module_obeys_the_preauth_rule(self):
         self.assertTrue(MODULE.is_file(), "missing scripts/preauth.py")
-        self.assertEqual(process_violations(MODULE.read_text(encoding="utf-8")), [])
+        self.assertEqual(preauth_violations(MODULE.read_text(encoding="utf-8")), [])
+
+    def test_preauth_imports_only_the_frozen_entry_point_by_name(self):
+        self.assertTrue(MODULE.is_file(), "missing scripts/preauth.py")
+        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+        froms = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "preauth_verify"]
+        self.assertEqual(len(froms), 1)
+        self.assertEqual([(a.name, a.asname) for a in froms[0].names], [(VERIFY_ENTRY, None)])
+        pre = load_module()
+        entry = getattr(pre, VERIFY_ENTRY)
+        self.assertEqual(Path(inspect.getsourcefile(entry)).resolve(), VERIFY_MODULE.resolve())
+        self.assertEqual(hashlib.sha256(VERIFY_MODULE.read_bytes()).hexdigest(), PREAUTH_VERIFY_SHA256)
+
+    def test_a_decision_runs_the_frozen_verifier_exactly_once(self):
+        keys = Keys()
+        self.addCleanup(keys.close)
+        pre = load_module()
+        data = json.dumps(envelope(), sort_keys=True).encode("utf-8")
+        seen = []
+        real = getattr(pre, VERIFY_ENTRY)
+
+        def spy(*args):
+            seen.append(args)
+            return real(*args)
+
+        signature = keys.sign(data)
+        with mock.patch.object(pre, VERIFY_ENTRY, spy), ProcessRecorder(self) as recorder:
+            decision = pre._check_for_tests(
+                data, signature, allowed_signers=str(keys.signers),
+                trusted_fingerprints=frozenset({keys.fingerprint}), repo=REPO, base_rev=CURRENT_BASE,
+                contract_sha256=CONTRACT, tier="T3", now=NOW, facts=facts(),
+                is_ancestor=lambda older, newer: older == SIGNED_BASE and newer == CURRENT_BASE)
+        self.assertTrue(decision["ok"])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], data)
+        self.assertEqual(seen[0][3], "kyle")
+        self.assertEqual(len(recorder.calls), 1)
+
+
+# --------------------------------------------------------------- r5: the frozen verifier itself
+def load_verify(name="preauth_verify_under_test"):
+    spec = importlib.util.spec_from_file_location(name, VERIFY_MODULE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FrozenVerifyModuleTest(unittest.TestCase):
+    """scripts/preauth_verify.py is committed at RED, frozen by sha256, and tested with real keys."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.keys = Keys()
+        cls.mod = load_verify()
+        cls.data = json.dumps(envelope(), sort_keys=True).encode("utf-8")
+        cls.sig = cls.keys.sign(cls.data)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.keys.close()
+
+    def verify(self, data=None, signature=None, signers=None, issuer="kyle", fail=None, hook=None):
+        with ProcessRecorder(self, fail) as recorder:
+            recorder.hook = hook
+            result = getattr(self.mod, VERIFY_ENTRY)(
+                self.data if data is None else data, self.sig if signature is None else signature,
+                str(self.keys.signers) if signers is None else signers, issuer)
+        return result, recorder
+
+    def test_module_is_frozen_by_sha256(self):
+        self.assertEqual(hashlib.sha256(VERIFY_MODULE.read_bytes()).hexdigest(), PREAUTH_VERIFY_SHA256,
+                         "scripts/preauth_verify.py is frozen; a change needs an owner-approved contract")
+
+    def test_every_name_it_defines_is_private(self):
+        tree = ast.parse(VERIFY_MODULE.read_text(encoding="utf-8"))
+        defined = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.append(node.name)
+            elif isinstance(node, ast.Assign):
+                defined.extend(t.id for t in node.targets if isinstance(t, ast.Name))
+        self.assertIn(VERIFY_ENTRY, defined)
+        self.assertEqual([n for n in defined if not n.startswith("_")], [])
+        public = {n for n in dir(self.mod) if not n.startswith("_")}
+        self.assertEqual(public, {"subprocess", "tempfile"})
+
+    def test_exactly_one_literal_ssh_keygen_verify_call(self):
+        tree = ast.parse(VERIFY_MODULE.read_text(encoding="utf-8"))
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _dotted(n.func) == "subprocess.run"]
+        self.assertEqual(len(calls), 1)
+        argv = calls[0].args[0]
+        self.assertEqual([e.value for e in argv.elts[:4] if isinstance(e, ast.Constant)],
+                         ["/usr/bin/ssh-keygen", "-Y", "verify", "-f"])
+        self.assertEqual(process_violations(VERIFY_MODULE.read_text(encoding="utf-8")), [])
+        self.assertEqual(self.mod._NAMESPACE, "rizzstack-preauth")
+        self.assertTrue(0 < self.mod._TIMEOUT_SECONDS <= 60)
+
+    def test_a_real_ed25519_signature_verifies(self):
+        result, recorder = self.verify()
+        self.assertIs(result, True)
+        self.assertEqual(len(recorder.calls), 1)
+        argv = recorder.calls[0]
+        self.assertEqual(argv[:5], ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", str(self.keys.signers)])
+        self.assertEqual(argv[5:9], ["-I", "kyle", "-n", "rizzstack-preauth"])
+        self.assertEqual(argv[9], "-s")
+        self.assertEqual(recorder.envs, [{"PATH": "/usr/bin:/bin"}])
+
+    def test_tampered_foreign_wrong_namespace_or_wrong_principal_is_false(self):
+        other = Keys()
+        self.addCleanup(other.close)
+        tampered = json.dumps(envelope(max_uses=1), sort_keys=True).encode("utf-8")
+        for kwargs in ({"data": tampered}, {"signature": other.sign(self.data)},
+                       {"signature": self.keys.sign(self.data, namespace="git")}, {"issuer": "bob"},
+                       {"signature": b"not a signature"}):
+            result, _ = self.verify(**kwargs)
+            self.assertIs(result, False, kwargs)
+
+    def test_signature_goes_to_a_private_temp_file_that_is_removed(self):
+        seen = {}
+
+        def hook(argv):
+            path = Path(argv[argv.index("-s") + 1])
+            seen["path"], seen["mode"], seen["bytes"] = path, path.stat().st_mode & 0o777, path.read_bytes()
+
+        result, _ = self.verify(hook=hook)
+        self.assertIs(result, True)
+        self.assertEqual(seen["mode"], 0o600)
+        self.assertEqual(seen["path"].suffix, ".sig")
+        self.assertEqual(seen["path"].parent.resolve(), Path(tempfile.gettempdir()).resolve())
+        self.assertEqual(seen["bytes"], self.sig)
+        self.assertFalse(seen["path"].exists())
+
+    def test_missing_or_hanging_ssh_keygen_is_unavailable(self):
+        result, _ = self.verify(fail="missing")
+        self.assertIsNone(result)
+        result, recorder = self.verify(fail="timeout")
+        self.assertIsNone(result)
+        self.assertTrue(recorder.timeouts and all(t is not None and 0 < t <= 60 for t in recorder.timeouts[:1]))
+
+    def test_unsafe_inputs_are_false_without_starting_a_process(self):
+        for kwargs in ({"issuer": "-kyle"}, {"issuer": "ky*"}, {"issuer": "kyle,bob"}, {"issuer": ""},
+                       {"issuer": "k" * 65}, {"issuer": 7}, {"issuer": "kyle\n"}, {"issuer": "kyle bob"},
+                       {"signers": "policy/allowed_signers"}, {"signers": "-f"}, {"signers": "/x\n"},
+                       {"signers": 7}, {"data": "text"}, {"signature": b""}, {"signature": "sig"}):
+            result, recorder = self.verify(**kwargs)
+            self.assertIs(result, False, kwargs)
+            self.assertEqual(recorder.calls, [], kwargs)
+
+    def test_a_path_hijack_does_not_reach_the_frozen_verifier(self):
+        fake = Path(tempfile.mkdtemp(prefix="preauth-hijack-"))
+        self.addCleanup(shutil.rmtree, fake, True)
+        (fake / "ssh-keygen").write_text("#!/bin/sh\necho Good signature; exit 0\n")
+        os.chmod(fake / "ssh-keygen", 0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(fake) + os.pathsep + os.environ.get("PATH", "")}):
+            result, recorder = self.verify(signature=b"-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n")
+        self.assertIs(result, False)
+        self.assertEqual(recorder.calls[0][0], "/usr/bin/ssh-keygen")
+
 
 if __name__ == "__main__":
     unittest.main()

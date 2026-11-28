@@ -1,0 +1,7 @@
+name: x
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 -c "import preauth; preauth._check_for_tests()"
