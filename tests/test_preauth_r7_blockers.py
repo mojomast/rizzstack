@@ -8,7 +8,8 @@ control "whitespace" character is a comment to preauth.py but a real entry to ss
 BLOCKER 2 (AC-015/016, re-freeze oracle fail-open): measured oracle maps are normalised first, a
 collision between two raw keys refuses, and the normalised maps are compared.
 
-Run: python3 -m pytest -q -p no:cacheprovider tests/test_preauth_r7_blockers.py
+Run (pytest): python3 -m pytest -q -p no:cacheprovider tests/test_preauth_r7_blockers.py
+Run (as CI):   python3 -m unittest discover -s tests -v
 """
 
 from __future__ import annotations
@@ -26,8 +27,10 @@ import test_preauth_envelope as base
 
 LEADS = (b"\x0c", b"\x0b", b"\x1c", b"\x1d", b"\x1e", b"\x1f", "\u0085".encode(), "\u00a0".encode(),
          "\u2028".encode(), "\u2029".encode(), "\u3000".encode(), b"\x00", b"\x7f")
-# Leads that real ssh-keygen treats as a live allowed-signers entry (R9 fuzz). NUL and DEL are
-# still refused by the byte rule, but ssh-keygen does not accept them, so they are not in this set.
+# Historical set from the R9 fuzz: leads that ssh-keygen treated as a live entry.
+# Local ssh-keygen also accepts DEL (0x7f) and rejects NUL. DEL stays in LEADS so the
+# byte rule still refuses it; it is not in this historical set. Vacuity probes every
+# lead against the local binary and requires at least one acceptance.
 BYPASS_LEADS = (b"\x0c", b"\x0b", b"\x1c", b"\x1d", b"\x1e", b"\x1f", "\u0085".encode(), "\u00a0".encode(),
                 "\u2028".encode(), "\u2029".encode(), "\u3000".encode())
 
@@ -121,6 +124,14 @@ class OracleNormalisationTest(base.EnvelopeCase):
     def run_old_new(self, old, new):
         return self.decide(self.refreeze(), measured=base.facts(oracle={"old": old, "new": new}))
 
+    def assert_ok(self, old, new):
+        # unittest reports an uncaught PreauthRefused as an error, not a failure.
+        try:
+            result = self.run_old_new(old, new)
+        except self.pre.PreauthRefused as exc:
+            self.fail("expected ok, refused %s" % exc.reason)
+        self.assertTrue(result["ok"])
+
     def test_changed_oracle_file_with_non_canonical_keys_refuses(self):
         for old_key, new_key in (("./tests/test_review_packet.py", "./tests/test_review_packet.py"),
                                  ("tests//test_review_packet.py", "tests//test_review_packet.py"),
@@ -136,7 +147,7 @@ class OracleNormalisationTest(base.EnvelopeCase):
     def test_unchanged_oracle_with_equivalent_spellings_is_allowed(self):
         old = {"./tests/test_review_packet.py": "1" * 40, "tests//conftest.py": "2" * 40, "src/thing.py": "7" * 40}
         new = {"tests/test_review_packet.py": "1" * 40, "./tests/conftest.py": "2" * 40, "src/thing.py": "8" * 40}
-        self.assertTrue(self.run_old_new(old, new)["ok"])
+        self.assert_ok(old, new)
 
     def test_two_raw_keys_that_normalise_to_one_path_refuse(self):
         for pair in (("tests/test_review_packet.py", "./tests/test_review_packet.py"),
@@ -183,17 +194,29 @@ class OracleNormalisationTest(base.EnvelopeCase):
                          measured=base.facts(oracle={"old": clean, "new": colliding}))
         old = {"./tests/test_review_packet.py": digest, "tests/conftest.py/": "2" * 40, "src/thing.py": "7" * 40}
         new = {canonical: digest, "tests/conftest.py": "2" * 40, "src/thing.py": "8" * 40}
-        self.assertTrue(self.run_old_new(old, new)["ok"])
+        self.assert_ok(old, new)
 
     def test_a_backslash_in_an_oracle_key_is_unproven(self):
         # A backslash is a legal filename character on Linux and in git, so folding it to slash
         # would merge two distinct tree paths. Any raw key containing "\" refuses
         # envelope_oracle_unproven, whether the hash changed, stayed the same, or collides
-        # with a slash spelling in the same map.
+        # with a slash spelling in the same map. Coverage includes embedded, trailing,
+        # leading, doubled and "\/" spellings, so a check of only "\\" in key.strip("\\")
+        # (which ignores edge backslashes) cannot pass.
         digest, changed = "1" * 40, "9" * 40
         canonical = "tests/test_review_packet.py"
-        for spelling in (r"tests\test_review_packet.py", r"tests\test_review_packet.py/",
-                         r"foo\bar.py", r"tests/foo\bar.py"):
+        spellings = (
+            r"tests\test_review_packet.py",
+            r"tests\test_review_packet.py/",
+            r"foo\bar.py",
+            r"tests/foo\bar.py",
+            "tests/test_review_packet.py\\",   # trailing
+            "\\tests/test_review_packet.py",   # leading
+            "tests\\\\test_review_packet.py",  # doubled
+            "tests/test_review_packet.py\\/",  # x.py\/
+            "tests\\/test_review_packet.py",   # \/
+        )
+        for spelling in spellings:
             self.refused("envelope_oracle_unproven", self.refreeze(),
                          measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: changed}}))
             self.refused("envelope_oracle_unproven", self.refreeze(),
@@ -202,24 +225,35 @@ class OracleNormalisationTest(base.EnvelopeCase):
                          measured=base.facts(oracle={"old": {spelling: digest}, "new": {canonical: changed}}))
             self.refused("envelope_oracle_unproven", self.refreeze(),
                          measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: digest}}))
-        colliding = {canonical: digest, r"tests\test_review_packet.py": digest}
-        clean = {canonical: digest, "tests/conftest.py": digest}
-        self.refused("envelope_oracle_unproven", self.refreeze(),
-                     measured=base.facts(oracle={"old": colliding, "new": clean}))
-        self.refused("envelope_oracle_unproven", self.refreeze(),
-                     measured=base.facts(oracle={"old": clean, "new": colliding}))
+        for spelling in spellings:
+            colliding = {canonical: digest, spelling: digest}
+            clean = {canonical: digest, "tests/conftest.py": digest}
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": colliding, "new": clean}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": clean, "new": colliding}))
 
     def test_a_slash_to_backslash_swap_is_unproven(self):
-        # Real-git case: git mv tests/test_review_packet.py to a literal backslash filename
-        # keeps the blob and pytest stops collecting the file. Both directions must refuse
-        # (envelope_oracle_unproven), not compare as unchanged after normalisation.
+        # Real-git cases: git mv to a literal backslash filename (embedded, trailing,
+        # leading, doubled, or "\/") keeps the blob and pytest stops collecting the
+        # file. Both directions must refuse envelope_oracle_unproven, not compare as
+        # unchanged after normalisation. Trailing backslash is the case a
+        # "\\" in key.strip("\\") check misses.
         digest = "03348f5f0f815389d5261ab8ed4aff3e237e68bc"
         slash = "tests/test_review_packet.py"
-        backslash = r"tests\test_review_packet.py"
-        self.refused("envelope_oracle_unproven", self.refreeze(),
-                     measured=base.facts(oracle={"old": {slash: digest}, "new": {backslash: digest}}))
-        self.refused("envelope_oracle_unproven", self.refreeze(),
-                     measured=base.facts(oracle={"old": {backslash: digest}, "new": {slash: digest}}))
+        swaps = (
+            r"tests\test_review_packet.py",
+            "tests/test_review_packet.py\\",
+            "\\tests/test_review_packet.py",
+            "tests\\\\test_review_packet.py",
+            "tests/test_review_packet.py\\/",
+            "tests\\/test_review_packet.py",
+        )
+        for backslash in swaps:
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {slash: digest}, "new": {backslash: digest}}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": {backslash: digest}, "new": {slash: digest}}))
 
     def test_a_non_hex_oracle_value_refuses(self):
         good = {"tests/test_review_packet.py": "1" * 40, "tests/conftest.py": "2" * 40}
@@ -238,9 +272,10 @@ class OracleNormalisationTest(base.EnvelopeCase):
             both = dict(good, **{"tests/test_review_packet.py": value})
             self.refused("envelope_oracle_unproven", self.refreeze(),
                          measured=base.facts(oracle={"old": both, "new": dict(both)}))
-        # Lowercase 40- and 64-character hex values remain accepted. The tests do not require
-        # uppercase or mixed-case hex to be accepted (an implementer may treat lowercase as
-        # canonical). Comparison is exact, so a case mismatch of the same digest is not "unchanged".
+        # Lowercase 40- and 64-character hex values remain accepted. Uppercase and mixed-case
+        # hex are unspecified: an implementer may accept them or treat lowercase as canonical.
+        # The tests do not require either behaviour. Comparison of accepted values is exact,
+        # so a case mismatch of the same digest is not treated as unchanged.
 
 
 class ProductionCheckTest(unittest.TestCase):
