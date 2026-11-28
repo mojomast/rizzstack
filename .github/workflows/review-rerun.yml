@@ -1,45 +1,51 @@
 name: review rerun
 
-# A submitted review changes what lease-tamper/ci-gate answer, but GitHub keeps
-# a failed check from the pull_request run beside any later green run of the same
-# name, so the merge box stays blocked. Re-run only the failed GATE jobs for the
-# reviewed head: a review must re-judge the review gate, never re-roll a failing
-# test.
+# A submitted or dismissed review changes what the base gate answers, so re-run
+# the newest pull_request_target gate-authority run for this pull request at its
+# exact head, whatever its conclusion: a later rejection must be able to turn a
+# green gate red.  A failed lease-tamper job on a pull_request run is re-run too.
 
 on:
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
   actions: write
 
 jobs:
-  rerun-failed-gates:
-    name: rerun failed gate jobs
+  rerun-base-gate:
+    name: rerun base gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Rerun lease-tamper on the pull_request runs for this head
+      - name: Re-run the base-pinned gate and any failed lease-tamper job
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          runs=$(gh api --paginate --slurp \
+          gate_runs=$(gh api --paginate --slurp \
+            "repos/$REPO/actions/workflows/gate-authority.yml/runs?event=pull_request_target&per_page=100")
+          gate_id=$(printf '%s' "$gate_runs" | jq -r --argjson pr "$PR_NUMBER" --arg head "$HEAD_SHA" '
+            [.[].workflow_runs[]
+             | select(.path == ".github/workflows/gate-authority.yml")
+             | select(.status == "completed")
+             | select(any(.pull_requests[]?; .number == $pr and (.head.sha // "") == $head))]
+            | sort_by([.created_at, .id]) | last | .id // empty')
+          if [ -n "$gate_id" ]; then
+            echo "rerun base gate: $gate_id"
+            gh api -X POST "repos/$REPO/actions/runs/$gate_id/rerun"
+          fi
+          head_runs=$(gh api --paginate --slurp \
             "repos/$REPO/actions/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=100")
-          run_ids=$(printf '%s' "$runs" | jq -r --argjson pr "$PR_NUMBER" '
+          run_ids=$(printf '%s' "$head_runs" | jq -r --argjson pr "$PR_NUMBER" '
             [.[].workflow_runs[]
              | select(.status == "completed" and .conclusion == "failure")
              | select(any(.pull_requests[]?; .number == $pr))
              | .id] | unique | .[]')
-          if [ -z "$run_ids" ]; then
-            echo "no failed pull_request run for $REPO#$PR_NUMBER at $HEAD_SHA"
-            exit 0
-          fi
-          reran=0
           for run in $run_ids; do
             jobs=$(gh api --paginate --slurp \
               "repos/$REPO/actions/runs/$run/jobs?per_page=100")
@@ -51,9 +57,5 @@ jobs:
             for job in $job_ids; do
               echo "rerun gate job: $job (run $run)"
               gh api -X POST "repos/$REPO/actions/jobs/$job/rerun"
-              reran=$((reran + 1))
             done
           done
-          if [ "$reran" -eq 0 ]; then
-            echo "no failed gate job on $REPO#$PR_NUMBER at $HEAD_SHA"
-          fi

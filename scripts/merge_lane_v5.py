@@ -66,7 +66,19 @@ from pathlib import Path
 
 SLICE = "slice"
 NON_SLICE = "non-slice"
-MERGE_STATES = ("CLEAN", "BEHIND")
+MERGE_STATES = ("CLEAN",)
+
+#: The gate GitHub runs for a pull request is the base branch's
+#: ``pull_request_target`` workflow.  Its run reports on the base tip, so the
+#: lane proves it through the workflow run, never a same-named head check.
+GATE_AUTHORITY_NAME = "gate-authority"
+GATE_AUTHORITY_EVENT = "pull_request_target"
+GATE_AUTHORITY_PATH = ".github/workflows/gate-authority.yml"
+GATE_AUTHORITY_REVIEW_RERUN_PATH = ".github/workflows/review-rerun.yml"
+GATE_AUTHORITY_APP = "github-actions"
+GATE_AUTHORITY_COMPARE_LIMIT = 300
+GATE_CODE_PREFIXES = (".github/scripts/",)
+GATE_CODE_PATHS = (GATE_AUTHORITY_PATH, GATE_AUTHORITY_REVIEW_RERUN_PATH)
 
 #: The gate the lane runs itself.  It is read from the trusted base revision,
 #: never from the pull request's head: a PR that edits the gate must not be
@@ -128,6 +140,13 @@ REVIEW_APPROVE_INDEPENDENT = "approve_independent"
 REVIEW_APPROVE_OWNER = "approve_owner"
 REVIEW_CHANGES_REQUESTED = "changes_requested"
 REVIEW_APPROVAL_KINDS = (REVIEW_APPROVE_INDEPENDENT, REVIEW_APPROVE_OWNER)
+
+#: The only logins whose words are an attestation.  The review text never names
+#: an identity: a coordinator, a bee or any other account can copy the canonical
+#: line, and none of them is an approval.  A rejection still governs whatever
+#: account posted it.
+REVIEWER_LOGIN = "rizzstack-reviewer[bot]"
+OWNER_LOGIN = "mojomast"
 
 #: How a review matches the head: at the head itself, or carried from an
 #: earlier head by a base-merge-only update with an unchanged diff.
@@ -194,6 +213,44 @@ _CARRY_HEX = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 def _policy_text(value):
     return value if isinstance(value, str) else ""
+
+
+def _policy_login(review):
+    """The login GitHub authenticated for a review, or an empty string.
+
+    GitHub's REST review carries ``user.login``; the lane's measured facts carry
+    the same value as ``author``.  Any other shape (a missing user, a non-string
+    login, an empty login) is not an identity.
+    """
+    if not isinstance(review, dict):
+        return ""
+    for key in ("user", "author"):
+        value = review.get(key)
+        if isinstance(value, dict):
+            login = value.get("login")
+            if isinstance(login, str):
+                return login
+        elif isinstance(value, str):
+            return value
+    return ""
+
+
+def review_identity_ok(review):
+    """True only for the authenticated reviewer app login."""
+    return _policy_login(review) == REVIEWER_LOGIN
+
+
+def owner_identity_ok(review):
+    """True only for the authenticated owner login."""
+    return _policy_login(review) == OWNER_LOGIN
+
+
+def _approval_identity_ok(review, kind):
+    if kind == REVIEW_APPROVE_INDEPENDENT:
+        return review_identity_ok(review)
+    if kind == REVIEW_APPROVE_OWNER:
+        return owner_identity_ok(review)
+    return True
 
 
 def _policy_first_line(body):
@@ -289,10 +346,19 @@ def review_names_commit(named, commit):
 
 
 def review_is_approval(review, kind=None):
+    """True when ``review`` is an approval of ``kind`` from the right login.
+
+    An independent approval must come from the reviewer app and an owner
+    attestation from the owner login; the canonical text alone is never an
+    identity.  A rejection has no login requirement and still governs whoever
+    posted it.
+    """
     form, named = review_form(review)
     if form not in REVIEW_APPROVAL_KINDS:
         return False
     if kind is not None and form != kind:
+        return False
+    if not _approval_identity_ok(review, form):
         return False
     return review_names_commit(named, (review or {}).get("commit_id"))
 
@@ -360,6 +426,8 @@ def approvals_at_head(reviews, head, kind):
         form, named = review_form(review)
         if form != kind:
             continue
+        if not _approval_identity_ok(review, kind):
+            continue
         if _policy_text(review.get("commit_id")).strip().lower() != wanted:
             continue
         if not review_names_commit(named, wanted):
@@ -393,6 +461,8 @@ def approval_chain(reviews, head, kind, ancestor=None):
     for review in reversed(review_chronology(reviews)):
         form, named = review_form(review)
         if form != kind:
+            continue
+        if not _approval_identity_ok(review, kind):
             continue
         commit = _policy_text(review.get("commit_id")).strip().lower()
         if not commit or commit == wanted or commit in seen:
@@ -1336,6 +1406,268 @@ def fetch_compare(repo_slug, older, newer, token, api_url=DEFAULT_API_URL, http=
     return payload
 
 
+def fetch_gate_authority_runs(repo_slug, token, api_url=DEFAULT_API_URL, http=None):
+    """The gate-authority workflow's ``pull_request_target`` runs."""
+    url = "%s/repos/%s/actions/workflows/%s/runs?event=%s&per_page=100" % (
+        api_url,
+        repo_slug,
+        "gate-authority.yml",
+        GATE_AUTHORITY_EVENT,
+    )
+    runs = []
+    for _ in range(MAX_PAGES):
+        payload, link = _get(url, token, http)
+        if not isinstance(payload, dict):
+            raise FetchError("%s did not return workflow runs" % url)
+        page = payload.get("workflow_runs")
+        if not isinstance(page, list):
+            raise FetchError("%s did not return workflow runs" % url)
+        runs.extend(item for item in page if isinstance(item, dict))
+        url = _next_page(link)
+        if not url:
+            return runs
+    raise FetchError("the workflow-run lookup did not terminate")
+
+
+def fetch_check_suite(repo_slug, suite_id, token, api_url=DEFAULT_API_URL, http=None):
+    url = "%s/repos/%s/check-suites/%s" % (api_url, repo_slug, int(suite_id))
+    payload, _link = _get(url, token, http)
+    if not isinstance(payload, dict):
+        raise FetchError("%s did not return a check suite" % url)
+    return payload
+
+
+def fetch_ref_tip(repo_slug, branch, token, api_url=DEFAULT_API_URL, http=None):
+    url = "%s/repos/%s/git/ref/heads/%s" % (
+        api_url,
+        repo_slug,
+        urllib.parse.quote(str(branch or ""), safe="/"),
+    )
+    payload, _link = _get(url, token, http)
+    if not isinstance(payload, dict):
+        raise FetchError("%s did not return a git ref" % url)
+    return payload
+
+
+def _run_pull_request_entry(run, number):
+    """The run's ``pull_requests[]`` entry for this PR number, or ``None``."""
+    entries = run.get("pull_requests")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            if int(entry.get("number")) == int(number):
+                return entry
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _full_name(value):
+    return _text((value or {}).get("full_name") if isinstance(value, dict) else value).strip().lower()
+
+
+def gate_authority_facts(repo_slug, number, pr, runs, token, api_url=DEFAULT_API_URL, http=None,
+                         demanded=False, head_check_present=False, error=False):
+    """The measured gate-authority run facts ``decide()`` consumes.
+
+    Every candidate's check-suite app is read from the API (a same-named check
+    from another app is not the gate), and every run's commit is compared with
+    the pull request's current base tip so the decision can prove both its base
+    ref and its ancestry without trusting a caller-supplied fact.
+    """
+    base_ref = _text((pr.get("base") or {}).get("ref")).strip()
+    base_tip = None
+    if demanded and base_ref:
+        try:
+            tip = fetch_ref_tip(repo_slug, base_ref, token, api_url, http)
+            base_tip = _sha(((tip.get("object") or {}).get("sha")))
+        except FetchError:
+            base_tip = None
+            error = True
+    items = []
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        item = {
+            "id": run.get("id"),
+            "path": _text(run.get("path")).strip(),
+            "event": _text(run.get("event")).strip(),
+            "status": _text(run.get("status")).strip().lower(),
+            "conclusion": _text(run.get("conclusion")).strip().lower(),
+            "head_sha": _sha(run.get("head_sha")) or "",
+            "created_at": _text(run.get("created_at")).strip(),
+            "run_started_at": _text(run.get("run_started_at")).strip(),
+            "pull_requests": run.get("pull_requests") if isinstance(run.get("pull_requests"), list) else None,
+            "repository": {"full_name": _full_name(run.get("repository"))},
+            "head_repository": {"full_name": _full_name(run.get("head_repository"))},
+            "app": None,
+            "compare_status": None,
+            "compare_files_present": False,
+            "compare_files": None,
+        }
+        suite_id = run.get("check_suite_id")
+        if suite_id is not None:
+            try:
+                suite = fetch_check_suite(repo_slug, suite_id, token, api_url, http)
+                item["app"] = _text((suite.get("app") or {}).get("slug")).strip()
+            except FetchError:
+                item["app"] = None
+                error = True
+        head_sha = item["head_sha"]
+        if base_tip and head_sha:
+            try:
+                document = fetch_compare(repo_slug, head_sha, base_tip, token, api_url, http)
+                item["compare_status"] = _text(document.get("status")).strip().lower()
+                if "files" in document:
+                    item["compare_files_present"] = True
+                    item["compare_files"] = document.get("files")
+                else:
+                    item["compare_files_present"] = False
+            except FetchError:
+                item["compare_status"] = None
+                item["compare_files_present"] = False
+                error = True
+        items.append(item)
+    return {
+        "demanded": bool(demanded),
+        "error": bool(error),
+        "number": int(number) if number is not None else 0,
+        "repo": _text(repo_slug).strip().lower(),
+        "base_ref": base_ref,
+        "base_tip": base_tip or "",
+        "head_check_present": bool(head_check_present),
+        "runs": items,
+    }
+
+
+def _gate_code_path(name):
+    normal = _text(name).replace("\\", "/")
+    while normal.startswith("./"):
+        normal = normal[2:]
+    if normal in GATE_CODE_PATHS:
+        return True
+    return any(normal.startswith(prefix) for prefix in GATE_CODE_PREFIXES)
+
+
+def _gate_code_changed(entry):
+    """``(invalid, changed)``: does a compare file entry touch the gate code?"""
+    if not isinstance(entry, dict):
+        return True, False
+    filename = entry.get("filename")
+    if not isinstance(filename, str) or not filename:
+        return True, False
+    status = _text(entry.get("status")).strip().lower()
+    changed = _gate_code_path(filename)
+    if status in ("copied", "changed", "renamed"):
+        previous = entry.get("previous_filename")
+        if isinstance(previous, str) and _gate_code_path(previous):
+            changed = True
+    return False, changed
+
+
+def _parse_stamp(value):
+    text = _text(value).strip()
+    if not STAMP_LINE.fullmatch(text):
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def gate_authority_state(gate, head, reviews):
+    """``(ok, reason, run_id)`` for the base-pinned gate run.
+
+    The newest run whose ``pull_requests[]`` names this PR decides, even when it
+    judged an older head.  Its base ref, its ancestry on the current base, its
+    conclusion, its start time against every submitted review, and the gate code
+    on the base at the tip are all required; any unreadable fact fails closed.
+    """
+    if not isinstance(gate, dict):
+        return True, None, None
+    if gate.get("head_check_present"):
+        return False, "gate_authority_unproven", None
+    if not gate.get("demanded"):
+        return True, None, None
+    if gate.get("error"):
+        return False, "gate_authority_unproven", None
+    wanted = _sha(head)
+    repo = _text(gate.get("repo")).strip().lower()
+    number = gate.get("number")
+    base_ref = _text(gate.get("base_ref")).strip()
+    if wanted is None or not repo or not base_ref or not gate.get("base_tip"):
+        return False, "gate_authority_unproven", None
+    candidates = []
+    for run in gate.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        if _text(run.get("path")).strip() != GATE_AUTHORITY_PATH:
+            continue
+        if _text(run.get("event")).strip() != GATE_AUTHORITY_EVENT:
+            continue
+        if _text(run.get("app")).strip() != GATE_AUTHORITY_APP:
+            continue
+        if _text((run.get("repository") or {}).get("full_name")).strip().lower() != repo:
+            continue
+        if _text((run.get("head_repository") or {}).get("full_name")).strip().lower() != repo:
+            continue
+        entry = _run_pull_request_entry(run, number)
+        if entry is None:
+            continue
+        candidates.append((run, entry))
+    if not candidates:
+        return False, "gate_authority_unproven", None
+
+    def order(item):
+        run = item[0]
+        try:
+            run_id = int(run.get("id"))
+        except (TypeError, ValueError):
+            run_id = 0
+        return (_text(run.get("created_at")), run_id)
+
+    run, entry = max(candidates, key=order)
+    verdict_run = run.get("id")
+    entry_head = _sha(((entry.get("head") or {}).get("sha")))
+    if entry_head != wanted:
+        return False, "gate_authority_unproven", verdict_run
+    entry_base = _text(((entry.get("base") or {}).get("ref"))).strip()
+    if entry_base != base_ref:
+        return False, "gate_authority_wrong_base", verdict_run
+    if _text(run.get("compare_status")).strip().lower() not in ("ahead", "identical"):
+        return False, "gate_authority_wrong_base", verdict_run
+    if _text(run.get("status")).strip().lower() != "completed" or _text(
+        run.get("conclusion")
+    ).strip().lower() != "success":
+        return False, "gate_authority_not_green", verdict_run
+
+    started = _parse_stamp(run.get("run_started_at"))
+    if started is None:
+        return False, "gate_authority_stale", verdict_run
+    for review in reviews or []:
+        if not isinstance(review, dict):
+            continue
+        submitted = _parse_stamp(review.get("submitted_at"))
+        if submitted is None:
+            continue
+        if started <= submitted:
+            return False, "gate_authority_stale", verdict_run
+
+    if not run.get("compare_files_present"):
+        return False, "gate_authority_stale_gate", verdict_run
+    files = run.get("compare_files")
+    if not isinstance(files, list) or len(files) >= GATE_AUTHORITY_COMPARE_LIMIT:
+        return False, "gate_authority_stale_gate", verdict_run
+    for entry_file in files:
+        invalid, changed = _gate_code_changed(entry_file)
+        if invalid or changed:
+            return False, "gate_authority_stale_gate", verdict_run
+    return True, None, verdict_run
+
+
 def pr_facts(pr, files):
     """The pull request facts ``decide()`` consumes, from the REST object."""
     head = _sha(((pr.get("head") or {}).get("sha")))
@@ -1383,6 +1715,10 @@ def check_facts(runs):
     out = []
     for run in runs or []:
         if not isinstance(run, dict):
+            continue
+        # A check run named gate-authority on the head commit is never the
+        # gate: the pull_request_target workflow reports on the base tip.
+        if _text(run.get("name")).strip() == GATE_AUTHORITY_NAME:
             continue
         out.append(
             {
@@ -1542,6 +1878,23 @@ def required_checks_from_rulesets(repo_slug, root=None, repo=None):
     return tuple(contexts) if contexts else tuple(DEFAULT_REQUIRED_CHECKS)
 
 
+def gate_authority_demanded(repo, required_checks):
+    """True when the base checkout carries the gate workflow or it is required.
+
+    GitHub's ruleset is never the authority here: a required check named
+    ``gate-authority`` pins only the Actions app, so a same-named job satisfies
+    it.  The base checkout's own workflow file is the stronger fact.
+    """
+    names = [
+        _text(name).strip() for name in (required_checks or ()) if isinstance(name, str)
+    ]
+    if GATE_AUTHORITY_NAME in names:
+        return True
+    if repo:
+        return (Path(repo) / GATE_AUTHORITY_PATH).is_file()
+    return False
+
+
 def collect_facts(repo_slug, number, repo, token, api_url=DEFAULT_API_URL, http=None,
                   pr=None, gate_record=None, verify_dir=DEFAULT_VERIFY_DIR,
                   plan_path=DEFAULT_PLAN_PATH, required_checks=None):
@@ -1555,6 +1908,37 @@ def collect_facts(repo_slug, number, repo, token, api_url=DEFAULT_API_URL, http=
     reviews = fetch_reviews(repo_slug, number, token, api_url, http)
     files = fetch_pull_request_files(repo_slug, number, token, api_url, http)
     runs = fetch_check_runs(repo_slug, head, token, api_url, http)
+    head_gate_check = any(
+        isinstance(run, dict)
+        and _text(run.get("name")).strip() == GATE_AUTHORITY_NAME
+        and _sha(run.get("head_sha")) == head
+        for run in runs
+    )
+    required_list = list(
+        required_checks if required_checks is not None
+        else required_checks_from_rulesets(repo_slug, repo=repo)
+    )
+    demanded = gate_authority_demanded(repo, required_list)
+    gate_error = False
+    gate_runs = []
+    if demanded:
+        try:
+            gate_runs = fetch_gate_authority_runs(repo_slug, token, api_url, http)
+        except FetchError:
+            gate_runs = []
+            gate_error = True
+    gate_authority = gate_authority_facts(
+        repo_slug,
+        number,
+        pr,
+        gate_runs,
+        token,
+        api_url,
+        http,
+        demanded=demanded,
+        head_check_present=head_gate_check,
+        error=gate_error,
+    )
     records = load_verify_records(verify_dir)
     compare = collect_compare(repo_slug, head, records, token, api_url, http)
     pull_class = class_from_gate(gate_record or {})
@@ -1573,10 +1957,8 @@ def collect_facts(repo_slug, number, repo, token, api_url=DEFAULT_API_URL, http=
         "pr": pr_state,
         "reviews": review_facts(reviews),
         "checks": check_facts(runs),
-        "required_checks": list(
-            required_checks if required_checks is not None
-            else required_checks_from_rulesets(repo_slug, repo=repo)
-        ),
+        "required_checks": required_list,
+        "gate_authority": gate_authority,
         "verify": {
             "records": records,
             "compare": compare,
@@ -1712,9 +2094,23 @@ def decide(facts, ancestor=None):
     verdict["tier"] = tier
     auto_t1 = pull_class == SLICE and tier == "T1"
 
-    ok, reason = checks_state(facts.get("checks") or [], head, facts.get("required_checks"))
+    required = facts.get("required_checks")
+    if isinstance(required, (list, tuple)):
+        # gate-authority is proven through its workflow run below, never by a
+        # same-named head check (which is filtered out of the check facts).
+        required = [
+            name for name in required
+            if _text(name).strip() != GATE_AUTHORITY_NAME
+        ]
+    ok, reason = checks_state(facts.get("checks") or [], head, required)
     if not ok:
         return refuse(reason)
+
+    gate_ok, gate_reason, _gate_run_id = gate_authority_state(
+        facts.get("gate_authority"), head, reviews
+    )
+    if not gate_ok:
+        return refuse(gate_reason)
 
     carry = facts.get("review_carry")
     review, review_match, review_reason = review_acceptance(reviews, head, carry, ancestor)
