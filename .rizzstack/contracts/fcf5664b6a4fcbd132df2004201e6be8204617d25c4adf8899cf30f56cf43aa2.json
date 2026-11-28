@@ -1,0 +1,178 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "trust_fingerprints reads the trust root as bytes the way ssh-keygen does: it refuses (envelope_signers_invalid) any byte outside printable ASCII except tab and newline (and one trailing CR per line), including form feed, vertical tab, file/group/record/unit separators, DEL, NUL, U+0085, U+00A0, U+2028/2029 and any other non-ASCII byte anywhere in the file; lines end at LF only; a line is a comment only if its first non-space/tab byte is '#'; fields split on space or tab only. A trust root hiding a '*'-principal entry behind such a lead character is therefore refused, never pinned-around. The hidden-entry tests probe each bypass character against the local ssh-keygen -Y verify, treat only the leads it actually accepts as vacuity evidence, and require at least one accepted lead, so the case cannot go vacuous and will not go red on a different OpenSSH. A check() call on an AC-027-style module copy of preauth.py also refuses envelope_signers_invalid for a lead this ssh-keygen accepts.",
+      "tests": [
+        "tests/test_preauth_r7_blockers.py::TrustRootParsingTest::test_a_comment_hidden_from_preauth_but_not_from_ssh_keygen_is_refused",
+        "tests/test_preauth_r7_blockers.py::TrustRootParsingTest::test_any_control_or_non_ascii_byte_anywhere_in_the_trust_root_is_refused",
+        "tests/test_preauth_r7_blockers.py::TrustRootParsingTest::test_comment_detection_uses_space_and_tab_only",
+        "tests/test_preauth_r7_blockers.py::ProductionCheckTest::test_check_refuses_a_hidden_trust_root_entry"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "Ordinary ASCII trust roots (comments, blank lines, indentation, tab-separated fields, CRLF endings) keep working and every earlier refusal is unchanged.",
+      "tests": [
+        "tests/test_preauth_r7_blockers.py::TrustRootParsingTest::test_ordinary_ascii_trust_roots_still_work",
+        "tests/test_preauth_envelope.py::TrustRootTest"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "The re-freeze oracle builds normalised old and new maps. A raw key containing a backslash anywhere (embedded, trailing, leading, doubled, or written as \\/) refuses envelope_oracle_unproven (a backslash is a legal git path character; folding it to slash would merge two distinct tree paths, e.g. git mv tests/test_review_packet.py to a literal tests\\test_review_packet.py keeps the blob and pytest stops collecting it). normalize_path and oracle_paths are left unchanged so the frozen r6 normalisation test still passes. Other spellings that cannot appear in a git tree path (trailing slash, //, ./) are normalised, not refused: a changed file under those spellings is envelope_oracle_changed; two raw keys that fold to the same path in one map refuse envelope_oracle_unproven; equivalent spellings of unchanged files are allowed. A slash-to-backslash swap of the same digest, in either direction and for each of those spellings (including a trailing-backslash git mv), refuses envelope_oracle_unproven. Every measured oracle value on either side must be a 40- or 64-character hexadecimal string; any other value (None, '?', a wrong-length or non-hex string, a non-string, or a whitespace-padded value such as a trailing newline or a leading space) refuses envelope_oracle_unproven, including when the same bad value appears on both sides. Uppercase and mixed-case hex are unspecified: an implementer may accept them or treat lowercase as canonical; the tests do not require either behaviour. Comparison of accepted values is exact, so a case mismatch of the same digest is not treated as unchanged.",
+      "tests": [
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_changed_oracle_file_with_non_canonical_keys_refuses",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_unchanged_oracle_with_equivalent_spellings_is_allowed",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_two_raw_keys_that_normalise_to_one_path_refuse",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_a_path_present_in_only_one_map_still_refuses_after_normalising",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_trailing_slash_and_dot_slash_spellings_are_normalised",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_a_backslash_in_an_oracle_key_is_unproven",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_a_slash_to_backslash_swap_is_unproven",
+        "tests/test_preauth_r7_blockers.py::OracleNormalisationTest::test_a_non_hex_oracle_value_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "Nothing frozen changes: scripts/preauth_verify.py stays byte-identical (sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b), policy/allowed_signers, the policy text, the schema and every existing test are untouched, and scripts/preauth.py still satisfies the frozen strict AST allowlist (for example re.split is not allowed; use bytes.split() after the byte check).",
+      "tests": [
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_preauth_module_obeys_the_preauth_rule",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "ssh-keygen with -Y (OpenSSH >= 8.2) is present on the box and on GitHub-hosted runners; if it is missing or hangs the checker refuses envelope_verifier_unavailable.",
+    "policy/allowed_signers is committed by RED with comments only and is read_only; adding the owner's public key is a separate owner-approved contract that updates the pin."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes",
+      "committing any private key",
+      "adding a key to policy/allowed_signers"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [
+    "preauth-envelope (PR #50 head 2096f8e82d7d8880ca46164e0a91bb348fb437b5 + this slice's RED commit; the r6 contract c413827e stays the approved base)"
+  ],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "preauth-envelope-r7",
+  "interfaces": [
+    {
+      "change": "modify",
+      "kind": "function",
+      "name": "trust_fingerprints"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "normalized_map"
+    },
+    {
+      "change": "modify",
+      "kind": "function",
+      "name": "_decide"
+    }
+  ],
+  "notes": [
+    "Draft only; not approved. Follow-up to PR #50 (preauth-envelope, GROKCHAT CHANGES REQUESTED at 672702ab; current head after the base-merge update is 2096f8e82d7d8880ca46164e0a91bb348fb437b5). The r6 tests are frozen, so the regression tests live in tests/test_preauth_r7_blockers.py (RED at source_rev, tests-only commits on red/preauth-envelope-r7). A throwaway GREEN prototype (scripts/preauth.py only, not committed) passes these tests, the existing preauth tests and the full suite under both pytest and unittest discover. This recut addresses GROKCHAT r11 (NEEDS CHANGES on f5b25c11): trailing, leading, doubled and \\/ backslash spellings are in the unproven and swap tests so a check of only embedded backslashes cannot pass; the CI note is corrected.",
+    "Landing sequencing: #50 must not merge until the r7 GREEN fix lands on the same branch (feat/preauth-envelope). The contract-mode preflight requires brief.source_rev == contract.source_rev, so a bee starts from this RED commit only after this contract is owner-approved.",
+    "Constraint for the implementer: the frozen AST allowlist on scripts/preauth.py forbids re.split (module_attr:re.split fails PreauthRuleTest). After rejecting every control and non-ASCII byte, split fields with bytes.split() (or an equivalent that uses only already-allowed constructs), never re.split. re.fullmatch is allowlisted if a hex check wants it. Refuse a backslash in normalized_map only; do not change normalize_path or oracle_paths (the frozen r6 test test_oracle_paths_normalise_before_matching must still pass).",
+    "Out of scope for this contract; record for a later contract that can touch the frozen verifier or tests: (1) verifier import shadowing \u2014 a preauth_verify module earlier on sys.path (or already in sys.modules) can make a garbage signature succeed via _check_for_tests; (2) the trust-root double read \u2014 the pin check uses bytes read once while ssh-keygen re-reads the file by path (TOCTOU). Envelope conditions and review remain type-checked but not evaluated (wiring must enforce). Case-insensitive filesystems (two paths that differ only in case colliding on such a volume) are also out of scope.",
+    "OpenSSH vacuity: the tests probe the local /usr/bin/ssh-keygen and do not pin a single version. Recorded here, not required of the implementer: the review box ran OpenSSH 10.0p2 (Debian). The workflow hygiene job in .github/workflows/gitleaks.yml (ubuntu-24.04) runs `python3 -m unittest discover -s tests -v` and is a needs of ci-gate, the required check. On the #50 head 2096f8e8 that job ran 459 tests, including the 98 frozen preauth tests with real ssh-keygen. Discovery picks up tests/test_preauth_r7_blockers.py automatically once it is on the PR branch, so the r7 tests run in required CI. The workflow logs do not print an OpenSSH version; Ubuntu 24.04 runners ship 9.6p1 (not verified empirically in this recut)."
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "check() returns ok only for a valid, trusted, in-date, unrevoked, allowlisted, listed, in-tier, in-budget first use",
+      "named refusals: envelope_schema_invalid, envelope_clock_invalid, envelope_policy_unproven, envelope_signers_invalid, envelope_signer_untrusted, envelope_bad_signature, envelope_verifier_unavailable, envelope_expired, envelope_not_yet_valid, envelope_ttl_exceeded, envelope_facts_unproven, envelope_revoked, envelope_action_forbidden, envelope_repo_mismatch, envelope_base_mismatch, envelope_contract_not_listed, envelope_tier_exceeded, envelope_oracle_unproven, envelope_oracle_changed, envelope_nonce_reused, envelope_replayed, envelope_budget_exhausted (the closed set REFUSAL_REASONS)",
+      "only the frozen verifier starts a process (ssh-keygen -Y verify), nothing signs",
+      "check() has no trust-root override; OWNER_FINGERPRINTS is empty",
+      "preauth.py has no process, write or tempfile access; the frozen verifier's only call is a literal ssh-keygen -Y verify argv",
+      "check() opens exactly policy/allowed_signers and policy/preauth.md in its own checkout and records both sha256s in an accepted decision"
+    ],
+    "summary": "The owner signs one bounded envelope with ssh-keygen -Y sign -n rizzstack-preauth on their own machine. policy/allowed_signers is a frozen, read-only trust root (hash-pinned; empty in this slice so every envelope refuses). The production entry point check() reads it from the module's own base checkout and requires every key to match the frozen module constant OWNER_FINGERPRINTS; it takes no path or fingerprint override (only the private, test-only _check_for_tests does). The only code that starts a process is the frozen scripts/preauth_verify.py (committed at RED, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b): private names only, exactly one /usr/bin/ssh-keygen -Y verify with env PATH=/usr/bin:/bin and a bounded timeout, the signature in a 0600 temp file with a constant suffix; from r6 it also caps data and signature sizes and requires ssh-keygen's Good-signature stdout line for the issuer. The implementer's scripts/preauth.py parses the envelope, applies policy and decides one use from measured facts, refusing with a named reason on any doubt, including missing state; it imports _ssh_verify by name and has no process, filesystem-write or tempfile access, enforced by a strict AST allowlist (preauth_violations). From r6 it opens only two files, through two __file__-relative constants (policy/allowed_signers and policy/preauth.md, the policy each decision is bound to by sha256), never prints or writes to stdout/stderr, and refuses only with a literal reason from the closed set REFUSAL_REASONS through one canonical refuse() helper. This slice does not wire the checker into the gate or lane: that is the separate named slice preauth-wiring, whose frozen rules (whole-tree static scan plus a dynamic trap) hold now."
+  },
+  "review": {
+    "approved_at": "2026-11-28T06:20:51-05:00",
+    "approved_by": "Kyle (mojomast, owner) typed: Approved fcf5664b (preauth-envelope r7 follow-up: trust-root parsing and re-freeze oracle fixes), 2026-11-28",
+    "contract_sha256": "fcf5664b6a4fcbd132df2004201e6be8204617d25c4adf8899cf30f56cf43aa2",
+    "status": "approved"
+  },
+  "risk": {
+    "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
+    "reasons": [
+      "authorization and crypto verification surface"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/preauth.py"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/**",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "policy/allowed_signers",
+      "policy/preauth.md",
+      "policy/README.md",
+      "schemas/preauth.schema.json",
+      "scripts/preauth_verify.py",
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      "policy/rulesets/**",
+      "contracts/preauth-wiring.requirements.json"
+    ],
+    "test_files": [
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/test_preauth_r7_blockers.py",
+      "tests/fixtures/preauth/**"
+    ]
+  },
+  "source_rev": "052afa3ec095527653cfdb0c92a59c3bc15b20a4",
+  "supersedes": [],
+  "tdd": {
+    "applicable": true
+  },
+  "title": "preauth-envelope r7 fixes: trust-root parsing reads bytes the way ssh-keygen does (AC-005) and the re-freeze oracle normalises, refuses collisions, then compares (AC-015/016)",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_envelope.py tests/test_preauth_policy.py tests/test_preauth_r7_blockers.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
