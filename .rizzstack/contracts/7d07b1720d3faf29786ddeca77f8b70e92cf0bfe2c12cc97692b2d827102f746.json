@@ -442,8 +442,9 @@
     "approved_at": null,
     "approved_by": null,
     "contract_sha256": "7d07b1720d3faf29786ddeca77f8b70e92cf0bfe2c12cc97692b2d827102f746",
-    "note": "pending owner approval; approved_by is set only from Kyle's typed line",
-    "status": "draft"
+    "note": "Superseded by S2 r5 (2d0afeb954f2bfbbecd8c89c3afcb711aadea19c5a32474be8aff16822f2883c): frozen verifier module scripts/preauth_verify.py plus a strict allowlist for preauth.py, per GROKCHAT round 4.",
+    "status": "superseded",
+    "superseded_by": "2d0afeb954f2bfbbecd8c89c3afcb711aadea19c5a32474be8aff16822f2883c"
   },
   "risk": {
     "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
