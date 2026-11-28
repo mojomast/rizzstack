@@ -1,0 +1,670 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "Envelope fields: schema rizzstack.preauth/2 and id, issuer, issued_at, expires_at, nonce, action_class, repos, bases, contracts, review, budget, conditions, max_uses, created_from; the JSON schema and the checker require exactly these (additionalProperties false), and the schema's action_class is an enum equal to ALLOWED_ACTION_CLASSES.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_schema_requires_the_envelope_fields",
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_schema_matches_the_checker"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "A malformed envelope (missing or extra field, duplicate key, non-object) refuses envelope_schema_invalid before any other check.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_schema_invalid_envelope_refuses_before_anything_else"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "_check_for_tests(data, signature, *, allowed_signers=, allowed_signers_bytes=, policy_bytes=, trusted_fingerprints=, repo=, base_rev=, contract_sha256=, tier=, now=, facts=, is_ancestor=) (private and test-only; the decision tests drive it with a temporary trust root, passing its path for ssh-keygen and its bytes, since from r6 preauth.py opens only its two pinned files) returns ok with envelope_id, contract_sha256 and max_tier, plus policy_sha256 and allowed_signers_sha256 of the policy and trust-root bytes it decided under, only for a correctly signed, in-date, unrevoked, listed, in-tier, in-budget first use. From r6 every refusal in the decision tests is one reason from the closed REFUSAL_REASONS set, carried as exception.reason with args exactly (reason,).",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_valid_signed_envelope_authorizes_one_listed_contract"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "The signature is verified with ssh-keygen -Y verify, identity = issuer, namespace rizzstack-preauth, over the exact bytes; tampered bytes, a foreign key, another namespace, a garbage signature or an issuer that is not the signing principal refuse envelope_bad_signature; with two principals the issuer binds to its own key only.",
+      "tests": [
+        "tests/test_preauth_envelope.py::SignatureTest::test_tampered_envelope_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_foreign_key_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_wrong_namespace_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_garbage_signature_is_a_bad_signature",
+        "tests/test_preauth_envelope.py::SignatureTest::test_issuer_must_be_the_signing_principal",
+        "tests/test_preauth_envelope.py::SignatureTest::test_multi_principal_trust_root_binds_issuer_to_its_own_key"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "Trust root: every key line in allowed_signers must have a SHA256 fingerprint in the checker's pin (OWNER_FINGERPRINTS in production; the test-only entry point takes a temporary pin); an empty file, a key outside the pin, or an implementer-added key beside the owner key refuses envelope_signer_untrusted.",
+      "tests": [
+        "tests/test_preauth_envelope.py::TrustRootTest::test_empty_trust_root_refuses_every_envelope",
+        "tests/test_preauth_envelope.py::TrustRootTest::test_key_not_in_the_owner_pin_is_refused",
+        "tests/test_preauth_envelope.py::TrustRootTest::test_implementer_added_key_beside_the_owner_key_is_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "statement": "cert-authority lines, wildcard or negated or comma-separated principals, missing or wider namespaces, other key types and malformed lines refuse envelope_signers_invalid.",
+      "tests": [
+        "tests/test_preauth_envelope.py::TrustRootTest::test_cert_authority_wildcard_and_malformed_trust_lines_are_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-007",
+      "regression": true,
+      "statement": "policy/allowed_signers is frozen: its sha256 equals ALLOWED_SIGNERS_SHA256 in the test file and its keys equal OWNER_FINGERPRINTS (empty in this slice); adding a key needs a new owner-approved contract.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_trust_root_is_frozen_and_holds_only_pinned_owner_keys"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-008",
+      "statement": "now >= expires_at refuses envelope_expired; now < issued_at refuses envelope_not_yet_valid; expires_at more than 7 days after issued_at refuses envelope_ttl_exceeded even if signed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_expired_envelope_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_not_yet_valid_envelope_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_longer_than_seven_days_refuses",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_states_the_seven_day_ceiling"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-009",
+      "statement": "Timestamps must be exact YYYY-MM-DDTHH:MM:SSZ and real dates, and expires_at must be after issued_at, else envelope_schema_invalid; a naive or missing clock refuses envelope_clock_invalid; an issuer that could be read as an option or pattern (leading -, *, ?, !, comma, space, non-string) refuses envelope_schema_invalid.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_expiry_before_issue_and_malformed_timestamps_refuse",
+        "tests/test_preauth_envelope.py::ValidityTest::test_naive_or_missing_clock_refuses",
+        "tests/test_preauth_envelope.py::ValidityTest::test_issuer_that_could_be_read_as_an_option_or_pattern_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-010",
+      "statement": "An envelope id in the measured revocation list refuses envelope_revoked, effective immediately.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ValidityTest::test_revoked_envelope_refuses_immediately"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-011",
+      "statement": "Missing, null or mistyped revocation, consumed-use, nonce, attempt or bees-in-flight state refuses envelope_facts_unproven (fail closed).",
+      "tests": [
+        "tests/test_preauth_envelope.py::FactsFailClosedTest::test_missing_state_refuses_with_a_named_reason",
+        "tests/test_preauth_envelope.py::FactsFailClosedTest::test_null_or_mistyped_state_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-012",
+      "statement": "action_class is an allowlist (merge_slice, refreeze_contract, vendor_sync, close_superseded_pr, dispatch_wave); anything else, including deploy, gate/lane, rulesets, force-push, preauth widening and case variants, refuses envelope_action_forbidden; the policy names every never-pre-authorizable class.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_action_class_is_an_allowlist",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_names_every_never_preauthorizable_class"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-013",
+      "statement": "A repository not in repos refuses envelope_repo_mismatch; a repo missing from bases, or a base that does not descend from bases[repo], refuses envelope_base_mismatch; a contract listed only under another repo, or not listed, refuses envelope_contract_not_listed.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_wrong_repository_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_bases_missing_the_repo_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_base_that_does_not_descend_from_the_signed_base_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_contract_listed_only_under_another_repo_refuses",
+        "tests/test_preauth_envelope.py::ScopeTest::test_contract_not_listed_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-014",
+      "statement": "A slice tier above the contract's max_tier (T1 < T3) or an unknown tier refuses envelope_tier_exceeded.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ScopeTest::test_tier_above_the_contracts_max_tier_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-015",
+      "statement": "oracle_paths covers tests, conftest, pytest/tox/setup.cfg/pyproject/setup.py/noxfile/.coveragerc, fixtures/data/helpers/__init__, test_*.py and *_test.py anywhere, sitecustomize/usercustomize/.pth/tests/plugins, requirements*, uv.lock, poetry.lock, Pipfile* and .github/workflows/*; it normalises ./, //, .. and backslashes first and refuses ../ or absolute paths.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_oracle_paths_cover_tests_conftest_config_fixtures_dependencies_ci_and_hooks",
+        "tests/test_preauth_envelope.py::OracleTest::test_oracle_paths_normalise_before_matching"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-016",
+      "statement": "A re-freeze is allowed only with identical oracle files at the old and new source_rev (product code may differ); changing, adding or removing any oracle file refuses envelope_oracle_changed; no measured oracle fact refuses envelope_oracle_unproven.",
+      "tests": [
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_with_an_identical_oracle_is_allowed",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_changes_any_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_that_adds_or_removes_an_oracle_file_refuses",
+        "tests/test_preauth_envelope.py::OracleTest::test_refreeze_without_measured_oracle_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-017",
+      "statement": "Budget: exact keys max_merges (int >= 1), max_bees (1..4), max_attempts_per_contract (int >= 1), max_uses a positive int (no bool/float), else envelope_schema_invalid; uses >= min(max_uses, max_merges), attempts >= max_attempts_per_contract, or dispatch_wave with bees_in_flight >= max_bees refuse envelope_budget_exhausted; uses of another envelope do not count.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_budget_shape_is_bounded",
+        "tests/test_preauth_envelope.py::BudgetTest::test_exhausted_merge_budget_refuses",
+        "tests/test_preauth_envelope.py::BudgetTest::test_max_uses_is_a_ceiling_too",
+        "tests/test_preauth_envelope.py::BudgetTest::test_attempts_per_contract_are_capped",
+        "tests/test_preauth_envelope.py::BudgetTest::test_bees_in_flight_are_capped_for_wave_dispatch",
+        "tests/test_preauth_envelope.py::BudgetTest::test_uses_of_another_envelope_do_not_count"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-018",
+      "statement": "A second use for the same contract refuses envelope_replayed; a nonce recorded for a different envelope id refuses envelope_nonce_reused.",
+      "tests": [
+        "tests/test_preauth_envelope.py::BudgetTest::test_replayed_use_of_the_same_contract_refuses",
+        "tests/test_preauth_envelope.py::BudgetTest::test_nonce_reused_by_another_envelope_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-019",
+      "statement": "Recorded at the process layer (subprocess.Popen and the os exec/spawn/system/fork family), check() starts exactly one process, argv ssh-keygen -Y verify; a missing ssh-keygen or one that hangs (bounded timeout) refuses envelope_verifier_unavailable. From r4 the recorder also asserts argv[0] is exactly /usr/bin/ssh-keygen (resolving outside any temp dir), env is exactly {PATH: /usr/bin:/bin}, no executable= override, and os.environ is unchanged by the call. From r5 that one process is started only by the frozen scripts/preauth_verify.py; scripts/preauth.py starts none.",
+      "tests": [
+        "tests/test_preauth_envelope.py::VerifierTest::test_every_process_is_ssh_keygen_verify",
+        "tests/test_preauth_envelope.py::VerifierTest::test_missing_ssh_keygen_refuses",
+        "tests/test_preauth_envelope.py::VerifierTest::test_hanging_ssh_keygen_refuses_within_a_bounded_timeout"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-020",
+      "statement": "A PATH hijack cannot forge a signature: with a fake always-succeeding ssh-keygen first on os.environ PATH, a garbage signature still refuses envelope_bad_signature, and the recorded call is /usr/bin/ssh-keygen with env {PATH: /usr/bin:/bin}.",
+      "tests": [
+        "tests/test_preauth_envelope.py::VerifierTest::test_a_path_hijack_cannot_forge_a_signature"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-021",
+      "statement": "Key custody: the module defines no sign/mint/generate name (AST and runtime names) and imports no signing library.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_module_verifies_and_never_signs"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-022",
+      "regression": true,
+      "statement": "No tracked file contains private key material of any common format.",
+      "tests": [
+        "tests/test_preauth_envelope.py::KeyCustodyTest::test_no_tracked_file_holds_private_key_material"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-023",
+      "statement": "policy/preauth.md states signed approval and immediate revocation and that agents never create, widen or extend envelopes.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_signed_approval_and_immediate_revocation"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-024",
+      "statement": "policy/preauth.md proposes P1-P5 with mechanical conditions, a ledger and a daily digest; P1 is the first numbered condition and covers frozen test blobs, conftest, pytest config and fixtures.",
+      "tests": [
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_proposes_the_five_initial_envelopes",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_policy_requires_mechanical_conditions_and_a_daily_digest",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_rejects_a_refreeze_that_changes_frozen_test_blobs",
+        "tests/test_preauth_policy.py::PreauthPolicyTest::test_p1_is_a_numbered_condition_covering_conftest_and_fixtures"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-025",
+      "statement": "scripts/preauth.py defines OWNER_FINGERPRINTS as a frozen tuple (empty in this slice) equal to the test pin, with no duplicates, each SHA256:<43 base64>.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_owner_fingerprints_constant_is_frozen_and_equals_the_test_pin"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-026",
+      "statement": "The production entry point check(data, signature, repo, base_rev, contract_sha256, tier, now, facts, is_ancestor) takes exactly these parameters (no *args/**kwargs, no allowed_signers/trusted_fingerprints override; passing one is a TypeError) and, with the committed empty trust root, refuses every envelope envelope_signer_untrusted.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_check_takes_no_trust_root_override",
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_the_committed_trust_root_refuses_every_envelope"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-027",
+      "statement": "check() reads policy/allowed_signers from the checkout the module itself lives in (the base checkout) and uses the module constant OWNER_FINGERPRINTS: a copy of the module in a tree whose allowed_signers names the key refuses with the empty pin and accepts with the key's fingerprint in the pin; the working directory and environment variables never redirect the trust root.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_check_reads_the_base_checkout_trust_root_and_the_module_pin",
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_cwd_and_environment_do_not_redirect_the_trust_root"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-028",
+      "statement": "Trust-root overrides exist only in the private _check_for_tests (docstring says test-only; no public check_for_tests); no public function takes trusted_fingerprints or allowed_signers; from r5 the verify entry point is private (no public function whose name contains verif or signature; preauth.py reaches ssh-keygen only through the frozen _ssh_verify); the only public *check* function is check; the module never calls or references _check_for_tests.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_overrides_live_only_in_the_test_only_entry_point"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-029",
+      "regression": true,
+      "statement": "The static one-process rule (process_violations, frozen in the test file) accepts the must-pass stub and refuses all 22 r3 must-fail stubs (and the directory holds exactly the r3, r4 and r5 stub names) under tests/fixtures/preauth/must_fail/, including GROKCHAT's split-string sign stub (two process calls) and the Popen-alias stub (from subprocess import Popen). From r5 the rule is hardened (value use of module attributes, decorators, class keywords, dunder defs, match, .format/.format_map, tempfile arguments other than a constant suffix) and still accepts the must-pass stub.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_safe_verify_stub_passes_the_rule",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_must_fail_stubs_are_refused",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_grokchat_split_string_and_popen_alias_stubs_are_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-030",
+      "regression": true,
+      "statement": "23 r4 must-fail stubs, each the must-pass stub plus one bypass (at most 12 extra lines), are refused for their own named violation: GROKCHAT round-3 bypasses o = os alias, os.__getattribute__, object.__getattribute__, operator.attrgetter, timeit and cProfile code strings, lambda returning os, a function returning os, webbrowser with BROWSER, importing merge_lane_v5._git with a git -c alias, PATH hijack (environ/chmod/write-open), functools.partial(subprocess.run); and putenv, chmod, write-mode open, relative ssh-keygen, missing or computed env, generator frame f_globals, help() pager, a private module attribute, a nested import, rebinding subprocess.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_round_three_bypass_stubs_are_refused_for_their_own_reason",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_every_r4_stub_differs_from_the_safe_stub_only_by_its_bypass"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-031",
+      "regression": true,
+      "statement": "The frozen verifier scripts/preauth_verify.py is committed at RED (re-pinned at r6 for the defence-in-depth change below) with sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b (pinned here and as PREAUTH_VERIFY_SHA256 in the test file); every name it defines is private (its only public names are the imported subprocess and tempfile modules); it holds exactly one subprocess.run call, a literal list starting /usr/bin/ssh-keygen -Y verify -f, with env {PATH: /usr/bin:/bin}, a timeout in (0, 60] and namespace rizzstack-preauth; and it obeys the hardened one-process rule (process_violations). This replaces r4's AC-031: the one-process rule now applies to the frozen verifier, and preauth.py gets the stricter preauth rule (below).",
+      "tests": [
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_module_is_frozen_by_sha256",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_every_name_it_defines_is_private",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_exactly_one_literal_ssh_keygen_verify_call",
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_frozen_verify_module_obeys_the_rule"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-032",
+      "regression": true,
+      "statement": "Frozen for preauth-wiring: .github/scripts/lease_tamper.py and scripts/merge_lane_v5.py obey the wiring rule (wiring_violations): nothing from preauth but check and PreauthRefused (imports, attributes, module value use), no preauth_verify import, no dynamic import or code loading, no computed getattr, and no private preauth name (check_for_tests, _check_for_tests, _decide, _ssh_verify) as a name or string.",
+      "tests": [
+        "tests/test_preauth_envelope.py::WiringFreezeTest::test_gate_and_lane_reference_only_check_from_preauth"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-033",
+      "regression": true,
+      "statement": "GROKCHAT's nine round-4 stubs, committed verbatim under tests/fixtures/preauth/must_fail/ (each the must-pass stub plus at most 12 lines), are refused by the hardened process rule for their own bypass: subprocess.run used as a value (alias, walrus, dict, default argument, and the split-string sign stub) -> module_attr_value:subprocess.run; match capture -> match_statement; decorator/metaclass -> decorator, class_keyword, dunder_def:__iter__; NamedTemporaryFile with dir/prefix/delete/mode (.pth persistence) -> tempfile_args; '{0.__globals__...}'.format -> format_attr:format.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProcessRuleTest::test_round_four_bypass_stubs_are_refused_for_their_own_reason"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-034",
+      "regression": true,
+      "statement": "The frozen verifier, tested with real ed25519 keys generated at run time: a good signature returns True with exactly one recorded process (/usr/bin/ssh-keygen -Y verify -f <signers> -I <issuer> -n rizzstack-preauth -s <tmp>, env {PATH: /usr/bin:/bin}); tampered bytes, a foreign key, the git namespace, another principal or garbage return False; the signature is in a 0600 file with suffix .sig in the system temp dir, holding exactly the signature bytes, removed on return; a missing or hanging ssh-keygen returns None within a bounded timeout; unsafe inputs (option-like, pattern or over-long issuer, relative or option-like signers path, non-bytes data or signature, empty signature) return False without starting any process; a PATH hijack never reaches the verifier.",
+      "tests": [
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_a_real_ed25519_signature_verifies",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_tampered_foreign_wrong_namespace_or_wrong_principal_is_false",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_signature_goes_to_a_private_temp_file_that_is_removed",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_missing_or_hanging_ssh_keygen_is_unavailable",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_unsafe_inputs_are_false_without_starting_a_process",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_a_path_hijack_does_not_reach_the_frozen_verifier"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-035",
+      "regression": true,
+      "statement": "The preauth.py rule (preauth_violations, frozen in the test file) accepts the must-pass preauth stub (from r6 the r6 control, safe_preauth.py) and refuses each of 51 r5 preauth-shaped must-fail stubs (each the r5 control, kept verbatim as safe_preauth_r5.py, plus at most 12 lines) for its own named violation, covering GROKCHAT's round-4 classes re-aimed at preauth.py (module alias, walrus, dict, default argument, match capture, decorator, metaclass, dunder def, sign via split string through re.enum.sys.modules, .pth via NamedTemporaryFile, .format and .format_map __globals__ leaks) plus imports, module-attribute chains, dynamic code, introspection, rebinding, class shape and every open() misuse; it also refuses every earlier process stub and the frozen verifier's own code.",
+      "tests": [
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_safe_preauth_stub_passes_the_rule",
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_every_preauth_stub_is_refused_for_its_own_reason",
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_every_earlier_process_stub_is_refused_by_the_preauth_rule",
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_the_frozen_verifier_could_not_live_in_preauth_py"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-036",
+      "statement": "scripts/preauth.py obeys the r6 preauth rule: imports only plain json, hashlib, base64, binascii, re (top level, no alias), from __future__ import annotations, from datetime import datetime/timezone/timedelta, and `from preauth_verify import _ssh_verify` exactly (no os, subprocess, tempfile or anything else); each module is used only as <module>.<allowlisted attribute> (json: loads/dumps/JSONDecodeError; hashlib: sha256; base64: b64decode/b64encode; binascii: Error; re: compile/fullmatch/match/search/escape/ASCII/IGNORECASE), called directly (flags and exception classes excepted), never bare, aliased, passed, returned or rebound; no decorators, class keywords, metaclasses or classes other than `class X(Exception)` with only a docstring or pass; no def or class name starting with _ except _check_for_tests and _decide; no attribute starting with _; no dunder name but __file__; no match, async def, global or nonlocal; no getattr/setattr/delattr/hasattr/eval/exec/compile/globals/locals/vars/dir/type/object/super/property/classmethod/staticmethod/format/breakpoint/input/help; no .format/.format_map, frame, environment or process attributes; open() only called directly with a literal mode r or rb, keywords only mode/encoding, at most two calls. r6 additions (preauth_r6_violations): open()'s first argument is the bare name of one of exactly two UPPERCASE module constants, each assigned once at module level as <__file__ narrowed only by rsplit/rpartition with literal arguments containing no '..' and int indexes> + one of the literals \"/policy/allowed_signers\" and \"/policy/preauth.md\" (one each), and each is opened; __file__ appears nowhere else; neither constant, refuse nor PreauthRefused is ever rebound (assignment, parameter, def, except-as or import name); print and the attributes stdout, stderr, stdin, write, writelines, displayhook and excepthook are banned; the only class is PreauthRefused; refusals go through exactly one helper `def refuse(reason): error = PreauthRefused(reason); error.reason = reason; raise error` (docstring allowed), the only raise statement and the only place PreauthRefused is constructed (it may also appear in an except clause); and every use of refuse is a direct call with exactly one positional string literal from REFUSAL_REASONS (no interpolation, f-string, variable, keyword or alias).",
+      "tests": [
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_preauth_module_obeys_the_preauth_rule"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-037",
+      "statement": "scripts/preauth.py imports exactly one name from the frozen verifier, `from preauth_verify import _ssh_verify`; the loaded entry point's source file is scripts/preauth_verify.py with the pinned sha256; one decision calls it exactly once, with the exact envelope bytes and the envelope's issuer, and exactly one process is recorded.",
+      "tests": [
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_preauth_imports_only_the_frozen_entry_point_by_name",
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_a_decision_runs_the_frozen_verifier_exactly_once"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-038",
+      "regression": true,
+      "statement": "Frozen for preauth-wiring, whole tree: every file under .github/ and scripts/ (except preauth.py and preauth_verify.py) obeys the wiring rule (Python by AST; workflows, shell and other text by pattern), and 22 wiring must-fail fixtures are caught for their own reason, including GROKCHAT's round-4 cases (`from scripts import preauth as pa; pa.verify_signature`, an importlib spec_from_file_location load, getattr(preauth, 'verify_' + 'signature'), getattr of '_check_for' + '_tests') and dotted or star imports, module value use, sys.modules, runpy, __import__, exec, the verifier import, private names and inline use from a workflow or shell script.",
+      "tests": [
+        "tests/test_preauth_envelope.py::WiringFreezeTest::test_every_file_under_github_and_scripts_obeys_the_wiring_rule",
+        "tests/test_preauth_envelope.py::WiringFreezeTest::test_wiring_must_fail_fixtures_are_caught"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-039",
+      "regression": true,
+      "statement": "Dynamic wiring trap: with a stand-in preauth module installed as preauth and scripts.preauth, where check and PreauthRefused work and every other name raises and is recorded, loading the lane and gate and running the lane's decide() and the gate's main() on a temporary repository records no forbidden name (the trap itself is checked to fire).",
+      "tests": [
+        "tests/test_preauth_envelope.py::WiringFreezeTest::test_preauth_names_other_than_check_raise_on_the_lane_and_gate_paths"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-040",
+      "statement": "check() opens exactly two files, once each, both in the checkout the module lives in: policy/allowed_signers and policy/preauth.md (builtins.open is spied during check(); resolved paths compared). An accepted decision records policy_sha256 and allowed_signers_sha256 equal to those files' sha256; refusals (empty module pin, wrong repository) open nothing else; a base checkout without policy/preauth.md refuses envelope_policy_unproven.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_check_opens_exactly_the_policy_and_the_trust_root",
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_a_missing_policy_file_refuses"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-041",
+      "statement": "Refusal reasons are a closed enumerated set: the module constant REFUSAL_REASONS equals the test file's REFUSAL_REASONS (the 21 earlier named refusals plus envelope_policy_unproven); every refuse() literal in scripts/preauth.py is in it; preauth.py obeys the r6 additions (preauth_r6_violations), so no reason interpolates file contents or any other value.",
+      "tests": [
+        "tests/test_preauth_envelope.py::ProductionEntryPointTest::test_refusal_reasons_are_a_closed_set"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-042",
+      "regression": true,
+      "statement": "27 r6 must-fail stubs (each the r6 control plus at most 12 lines) are refused for their own violation: reading /proc/self/environ by literal or by a non-__file__ constant, a __file__-relative credential path, '..' in the __file__ base, a third path constant, a bare __file__ reference, a rebound or shadowed path constant, several files through one open() call site (a helper over a list, a loop over the constants), open(file=...), print (call and as a json hook), stdout/stderr/write attributes, interpolated, f-string, unknown, variable or keyword refusal reasons, an aliased refuse, a direct raise, raising another exception with file contents, a non-canonical refuse helper, an alias of PreauthRefused and a second exception class. GROKCHAT's round-5 stubs, committed verbatim (secret_read_print, loop_many_reads, file_relative_read, lambda_json_hook), are refused (print, non-constant open, __file__ reference, non-enumerated reason), and the r5 control itself is now refused.",
+      "tests": [
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_round_six_stubs_are_refused_for_their_own_reason",
+        "tests/test_preauth_envelope.py::PreauthRuleTest::test_grokchat_round_five_stubs_are_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-043",
+      "regression": true,
+      "statement": "Frozen verifier defence in depth (r6): data over 65536 bytes or a signature over 8192 bytes returns False without starting a process (_MAX_DATA_BYTES, _MAX_SIGNATURE_BYTES); exit status 0 is a good signature only with exactly one stdout line starting `Good \"rizzstack-preauth\" signature for <issuer> with ` (empty output, another namespace, another or longer principal, two lines, a prefixed line or a different wording return False).",
+      "tests": [
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_oversized_data_or_signature_is_false_without_a_process",
+        "tests/test_preauth_envelope.py::FrozenVerifyModuleTest::test_exit_zero_needs_the_good_signature_line_for_the_issuer"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "ssh-keygen with -Y (OpenSSH >= 8.2) is present on the box and on GitHub-hosted runners; if it is missing or hangs the checker refuses envelope_verifier_unavailable.",
+    "policy/allowed_signers is committed by RED with comments only and is read_only; adding the owner's public key is a separate owner-approved contract that updates the pin.",
+    "tests/test_preauth_policy.py is r3's file with one test re-cut (hash approval -> signed approval) and FIELDS extended (review added).",
+    "P4 (deploy) is proposed in policy/preauth.md but deploy is not in ALLOWED_ACTION_CLASSES (t1623u needs a typed yes per deploy); whether to ever pre-authorize deploys is the owner's decision.",
+    "Facts (revocations, consumed uses, nonces, attempts, bees in flight, oracle blob maps, ancestry) are supplied by the caller; this slice only decides from them, and missing facts refuse. The trust root and owner pin are never caller-supplied in production.",
+    "ssh-keygen lives at /usr/bin/ssh-keygen on the box and on GitHub-hosted Ubuntu runners; if it is missing there the checker refuses envelope_verifier_unavailable (fail closed).",
+    "The frozen verifier writes the signature through tempfile.NamedTemporaryFile(suffix='.sig') (mkstemp: 0600, O_EXCL) in the system temp dir, which honours TMPDIR; whoever controls the lane's environment already controls the lane.",
+    "ssh-keygen re-reads policy/allowed_signers by path after preauth.py has parsed and pinned it (a read-after-check window); the file is in the read-only base checkout, so only someone who can already write the base checkout could race it.",
+    "preauth.py resolves `from preauth_verify import _ssh_verify` through sys.path; the tests put scripts/ first (as running the lane from scripts/ does) and assert the loaded file and its sha256. Making the lane and gate load from the base checkout's scripts/ is a frozen preauth-wiring requirement.",
+    "check() binds every accepted decision to the sha256 of policy/preauth.md and policy/allowed_signers in the base checkout; the policy file is read, not interpreted, so a missing policy refuses (envelope_policy_unproven) and the ledger can show which policy text was in force.",
+    "The two path constants derive from __file__; a module loaded from a symlinked or relative location resolves wherever __file__ points. The wiring slice loads preauth.py from the base checkout's scripts/ (frozen requirement).",
+    "A throwaway GREEN prototype (not committed: scripts/preauth.py, policy/preauth.md, schemas/preauth.schema.json) passed every test in the repo (456 passed, 3 skipped). Mutations (print in a helper, a reason concatenated with policy bytes, POLICY pointed at /proc/self/environ, skipping the policy read, reading the trust root twice) each fail at least one test."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes",
+      "committing any private key",
+      "adding a key to policy/allowed_signers"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "preauth-envelope",
+  "interfaces": [
+    {
+      "change": "add",
+      "kind": "module",
+      "name": "scripts/preauth.py"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "load_envelope"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "oracle_paths"
+    },
+    {
+      "change": "add",
+      "kind": "class",
+      "name": "PreauthRefused",
+      "notes": "kind: exception"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "NAMESPACE",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "MAX_TTL_SECONDS",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "REQUIRED_FIELDS",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "ALLOWED_ACTION_CLASSES",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "VERIFY_TIMEOUT_SECONDS",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "file",
+      "name": "schemas/preauth.schema.json"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "check"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "OWNER_FINGERPRINTS",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "TRUST_ROOT",
+      "notes": "kind: constant"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "_check_for_tests"
+    },
+    {
+      "change": "none",
+      "kind": "module",
+      "name": "scripts/preauth_verify.py",
+      "notes": "change: frozen (committed at RED, re-pinned at r6, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b)"
+    },
+    {
+      "change": "none",
+      "kind": "function",
+      "name": "_ssh_verify",
+      "notes": "change: frozen (scripts/preauth_verify.py; imported by name by preauth.py only)"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "_decide",
+      "notes": "change: add (private decision core shared by check and _check_for_tests)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "REFUSAL_REASONS",
+      "notes": "kind: constant; change: add (closed set of refusal reasons)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "TRUST_ROOT",
+      "notes": "kind: constant; change: add (__file__-relative path to policy/allowed_signers)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "POLICY",
+      "notes": "kind: constant; change: add (__file__-relative path to policy/preauth.md)"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "refuse",
+      "notes": "change: add (the canonical refusal helper)"
+    }
+  ],
+  "notes": [
+    "Wiring is out of scope and is the separate named slice preauth-wiring: the gate/lane call check() only (never _check_for_tests) with measured facts; its contract must freeze that call site. It must land before any unattended T1/T3 use of envelopes. Recommended to sequence it after gate-authority (S1), because it touches the same vendored lease_tamper.py and merge_lane_v5.py in seven repos.",
+    "Until preauth-wiring lands, envelopes authorize nothing; every owner approval stays a typed line.",
+    "Adding the owner's public key needs a new owner-approved contract that updates policy/allowed_signers, ALLOWED_SIGNERS_SHA256 and OWNER_FINGERPRINTS (test pin and module constant) together.",
+    "Residual (owner action): the owner's own GitHub token on agent hosts can still post as the owner login; only rotating or scoping that credential fixes it.",
+    "preauth-wiring requirements are committed on this branch as contracts/preauth-wiring.requirements.json (a draft, not hashed, nothing approved) and frozen now by WiringFreezeTest: every file under .github/ and scripts/ uses only preauth.check and PreauthRefused, with no dynamic loading, no computed getattr, no verifier import and no private names; a dynamic trap makes every other preauth name raise on the lane and gate paths.",
+    "r5 follows GROKCHAT's structural suggestion: stop patching a denylist over a module that may start processes. The process code is frozen and reviewed once; the implementer's module gets an allowlist with no process, write or tempfile capability.",
+    "r6 (GROKCHAT round 5, advisory-high 1): open() paths are pinned to two __file__-relative constants and spied at runtime, print and stdout/stderr writes are banned, and refusal reasons are a closed literal set, so preauth.py cannot read /proc/self/environ or a credential file, read many files through one call site, or carry file contents out in a printed reason.",
+    "GROKCHAT round 5 advisory-high 2 (wiring rule gaps: s.modules alias, scripts.preauth chains, vars(), constant getattr, from scripts import *, a trap through an envelope/T3 path) and the two S1 advisories (restrict the lane to the default branch or protect release/*; check previous_filename for copied/changed compare statuses) are recorded in contracts/preauth-wiring.requirements.json for the wiring slice; S1 f23d3ab3 is unchanged.",
+    "Inherent: a logic backdoor (for example accepting a magic signature) passes every static rule; only GREEN review catches it."
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "check() returns ok only for a valid, trusted, in-date, unrevoked, allowlisted, listed, in-tier, in-budget first use",
+      "named refusals: envelope_schema_invalid, envelope_clock_invalid, envelope_policy_unproven, envelope_signers_invalid, envelope_signer_untrusted, envelope_bad_signature, envelope_verifier_unavailable, envelope_expired, envelope_not_yet_valid, envelope_ttl_exceeded, envelope_facts_unproven, envelope_revoked, envelope_action_forbidden, envelope_repo_mismatch, envelope_base_mismatch, envelope_contract_not_listed, envelope_tier_exceeded, envelope_oracle_unproven, envelope_oracle_changed, envelope_nonce_reused, envelope_replayed, envelope_budget_exhausted (the closed set REFUSAL_REASONS)",
+      "only the frozen verifier starts a process (ssh-keygen -Y verify), nothing signs",
+      "check() has no trust-root override; OWNER_FINGERPRINTS is empty",
+      "preauth.py has no process, write or tempfile access; the frozen verifier's only call is a literal ssh-keygen -Y verify argv",
+      "check() opens exactly policy/allowed_signers and policy/preauth.md in its own checkout and records both sha256s in an accepted decision"
+    ],
+    "summary": "The owner signs one bounded envelope with ssh-keygen -Y sign -n rizzstack-preauth on their own machine. policy/allowed_signers is a frozen, read-only trust root (hash-pinned; empty in this slice so every envelope refuses). The production entry point check() reads it from the module's own base checkout and requires every key to match the frozen module constant OWNER_FINGERPRINTS; it takes no path or fingerprint override (only the private, test-only _check_for_tests does). The only code that starts a process is the frozen scripts/preauth_verify.py (committed at RED, sha256 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b): private names only, exactly one /usr/bin/ssh-keygen -Y verify with env PATH=/usr/bin:/bin and a bounded timeout, the signature in a 0600 temp file with a constant suffix; from r6 it also caps data and signature sizes and requires ssh-keygen's Good-signature stdout line for the issuer. The implementer's scripts/preauth.py parses the envelope, applies policy and decides one use from measured facts, refusing with a named reason on any doubt, including missing state; it imports _ssh_verify by name and has no process, filesystem-write or tempfile access, enforced by a strict AST allowlist (preauth_violations). From r6 it opens only two files, through two __file__-relative constants (policy/allowed_signers and policy/preauth.md, the policy each decision is bound to by sha256), never prints or writes to stdout/stderr, and refuses only with a literal reason from the closed set REFUSAL_REASONS through one canonical refuse() helper. This slice does not wire the checker into the gate or lane: that is the separate named slice preauth-wiring, whose frozen rules (whole-tree static scan plus a dynamic trap) hold now."
+  },
+  "review": {
+    "approved_at": "2026-11-28T01:45:26Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract_sha256": "c413827ed596969626234b6ea5d296a81d46f4df05f7787afe5ec12156601872",
+    "status": "approved"
+  },
+  "risk": {
+    "blast_radius": "defines what an owner signature authorizes; later consumed by the gate, lane and coordinator",
+    "reasons": [
+      "authorization and crypto verification surface"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/preauth.py",
+      "policy/preauth.md",
+      "policy/README.md",
+      "schemas/preauth.schema.json"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/**",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "policy/allowed_signers",
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      "policy/rulesets/**",
+      "scripts/preauth_verify.py",
+      "contracts/preauth-wiring.requirements.json"
+    ],
+    "test_files": [
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/fixtures/preauth/**"
+    ]
+  },
+  "source_rev": "1e3788b822293840726374b7e1421a1a0924f72b",
+  "supersedes": [
+    "preauth-policy r3 (c05c62c7)",
+    "preauth-envelope draft 1a3d79af (r1)",
+    "preauth-envelope draft 84d5fdb4 (r2)",
+    "preauth-envelope draft 5120dd62 (r3)",
+    "preauth-envelope draft 7d07b172 (r4)",
+    "preauth-envelope draft 2d0afeb9 (r5)",
+    "preauth-envelope r6 5c22cbf3 (interfaces metadata normalised to the acdd/1 schema; no test or scope change)"
+  ],
+  "tdd": {
+    "applicable": true
+  },
+  "title": "Owner-signed pre-authorization envelopes r6: frozen verifier module (one ssh-keygen -Y verify), preauth.py parsing/policy only under a strict AST allowlist, reads only its two pinned files, closed refusal reasons, frozen trust root and owner pin, no-override production entry point, whole-tree wiring freeze",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_envelope.py tests/test_preauth_policy.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
