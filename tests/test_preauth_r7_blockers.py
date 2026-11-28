@@ -14,12 +14,38 @@ Run: python3 -m pytest -q -p no:cacheprovider tests/test_preauth_r7_blockers.py
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import test_preauth_envelope as base
 
 LEADS = (b"\x0c", b"\x0b", b"\x1c", b"\x1d", b"\x1e", b"\x1f", "\u0085".encode(), "\u00a0".encode(),
          "\u2028".encode(), "\u2029".encode(), "\u3000".encode(), b"\x00", b"\x7f")
+# Leads that real ssh-keygen treats as a live allowed-signers entry (R9 fuzz). NUL and DEL are
+# still refused by the byte rule, but ssh-keygen does not accept them, so they are not in this set.
+BYPASS_LEADS = (b"\x0c", b"\x0b", b"\x1c", b"\x1d", b"\x1e", b"\x1f", "\u0085".encode(), "\u00a0".encode(),
+                "\u2028".encode(), "\u2029".encode(), "\u3000".encode())
+
+
+def ssh_keygen_accepts(data, signature, signers, issuer="kyle"):
+    """True if /usr/bin/ssh-keygen -Y verify accepts signature as issuer under signers."""
+    signers = os.path.abspath(os.fsdecode(signers))
+    with tempfile.NamedTemporaryFile(suffix=".sig") as handle:
+        handle.write(signature)
+        handle.flush()
+        proc = subprocess.run(
+            ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", signers, "-I", issuer,
+             "-n", "rizzstack-preauth", "-s", handle.name],
+            input=data, capture_output=True, timeout=20, env={"PATH": "/usr/bin:/bin"},
+        )
+    expected = b'Good "rizzstack-preauth" signature for ' + issuer.encode("ascii") + b" with "
+    lines = proc.stdout.splitlines()
+    return proc.returncode == 0 and len(lines) == 1 and lines[0].startswith(expected)
 
 
 class TrustRootParsingTest(base.EnvelopeCase):
@@ -36,11 +62,18 @@ class TrustRootParsingTest(base.EnvelopeCase):
         intruder = base.Keys(principal="kyle")
         try:
             data = json.dumps(base.envelope(), sort_keys=True).encode()
+            accepted_by_ssh = 0
             for lead in LEADS:
                 signers = self.trust_file(self.keys.line.encode() + b"\n", self.intruder_line(intruder, lead) + b"\n")
-                for key in (intruder, self.keys):
-                    self.refused("envelope_signers_invalid", data=data, signature=key.sign(data), signers=signers)
+                intruder_sig = intruder.sign(data)
+                if lead in BYPASS_LEADS:
+                    self.assertTrue(ssh_keygen_accepts(data, intruder_sig, signers),
+                                    "ssh-keygen must accept the hidden entry, else the test is vacuous: %r" % lead)
+                    accepted_by_ssh += 1
+                for key, sig in ((intruder, intruder_sig), (self.keys, self.keys.sign(data))):
+                    self.refused("envelope_signers_invalid", data=data, signature=sig, signers=signers)
                 self.assertEqual(self.recorder.calls, [], repr(lead))
+            self.assertEqual(accepted_by_ssh, len(BYPASS_LEADS), "vacuity: every bypass lead must be accepted by ssh-keygen")
         finally:
             intruder.close()
 
@@ -118,6 +151,92 @@ class OracleNormalisationTest(base.EnvelopeCase):
         old = {"./tests/test_review_packet.py": "1" * 40}
         new = {}
         self.refused("envelope_oracle_changed", self.refreeze(), measured=base.facts(oracle={"old": old, "new": new}))
+
+    def test_backslash_and_trailing_slash_spellings_are_normalised(self):
+        # normalize_path folds "\\" to "/" and drops empty trailing segments; it does not refuse these
+        # spellings. A changed file under either spelling is envelope_oracle_changed; two raw keys
+        # that fold to the same path are envelope_oracle_unproven; equivalent spellings of an
+        # unchanged file are allowed.
+        digest, changed = "1" * 40, "9" * 40
+        canonical = "tests/test_review_packet.py"
+        for spelling in (r"tests\test_review_packet.py", "tests/test_review_packet.py/",
+                         r"tests\test_review_packet.py/", "tests/test_review_packet.py//"):
+            self.refused("envelope_oracle_changed", self.refreeze(),
+                         measured=base.facts(oracle={"old": {spelling: digest}, "new": {spelling: changed}}))
+            self.refused("envelope_oracle_changed", self.refreeze(),
+                         measured=base.facts(oracle={"old": {canonical: digest}, "new": {spelling: changed}}))
+            self.refused("envelope_oracle_changed", self.refreeze(),
+                         measured=base.facts(oracle={"old": {spelling: digest}, "new": {canonical: changed}}))
+        for left, right in ((r"tests\test_review_packet.py", canonical),
+                            (canonical, "tests/test_review_packet.py/"),
+                            (r"tests\test_review_packet.py", "tests/test_review_packet.py/"),
+                            ("tests/conftest.py", "tests/conftest.py/")):
+            colliding = {left: digest, right: digest}
+            clean = {canonical: digest, "tests/conftest.py": digest}
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": colliding, "new": clean}))
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": clean, "new": colliding}))
+        old = {r"tests\test_review_packet.py": digest, "tests/conftest.py/": "2" * 40, "src/thing.py": "7" * 40}
+        new = {canonical: digest, "tests/conftest.py": "2" * 40, "src/thing.py": "8" * 40}
+        self.assertTrue(self.run_old_new(old, new)["ok"])
+
+    def test_a_non_hex_oracle_value_refuses(self):
+        good = { "tests/test_review_packet.py": "1" * 40, "tests/conftest.py": "2" * 40 }
+        bad_values = (None, "?", "", "1" * 39, "1" * 41, "1" * 63, "1" * 65, "g" * 40, "1" * 39 + "g", 40, True, [])
+        for value in bad_values:
+            for side in ("old", "new"):
+                old, new = dict(good), dict(good)
+                (old if side == "old" else new)["tests/test_review_packet.py"] = value
+                self.refused("envelope_oracle_unproven", self.refreeze(),
+                             measured=base.facts(oracle={"old": old, "new": new}))
+            # same bad value on both sides is still unproven, not a successful "unchanged"
+            both = dict(good, **{"tests/test_review_packet.py": value})
+            self.refused("envelope_oracle_unproven", self.refreeze(),
+                         measured=base.facts(oracle={"old": both, "new": dict(both)}))
+        # mixed-case hex of length 40 or 64 is accepted (unchanged)
+        for digest in ("A" * 40, "aB" * 20, "0" * 64, "Ff" * 32):
+            maps = {"tests/test_review_packet.py": digest, "src/thing.py": "7" * 40}
+            self.assertTrue(self.run_old_new(maps, dict(maps, **{"src/thing.py": "8" * 40}))["ok"], digest)
+
+
+class ProductionCheckTest(unittest.TestCase):
+    """The hidden-entry pin bypass is also refused at check(), via an AC-027-style module copy."""
+
+    def test_check_refuses_a_hidden_trust_root_entry(self):
+        keys = base.Keys()
+        intruder = base.Keys(principal="kyle")
+        root = Path(tempfile.mkdtemp(prefix="preauth-r7-check-"))
+        try:
+            (root / "scripts").mkdir()
+            (root / "policy").mkdir()
+            shutil.copyfile(base.MODULE, root / "scripts" / "preauth.py")
+            shutil.copyfile(base.VERIFY_MODULE, root / "scripts" / "preauth_verify.py")
+            lead = b"\x0c"
+            parts = intruder.public.split()
+            hidden = lead + b'#,* namespaces="rizzstack-preauth" ' + parts[0].encode() + b" " + parts[1].encode()
+            signers = root / "policy" / "allowed_signers"
+            signers.write_bytes(keys.line.encode() + b"\n" + hidden + b"\n")
+            (root / "policy" / "preauth.md").write_bytes(base.TEST_POLICY)
+            copy = base._load_copy(root, "preauth_r7_check_copy")
+            data = json.dumps(base.envelope(), sort_keys=True).encode()
+            signature = intruder.sign(data)
+            self.assertTrue(ssh_keygen_accepts(data, signature, signers),
+                            "ssh-keygen must accept the hidden entry, else the test is vacuous")
+            with mock.patch.object(copy, "OWNER_FINGERPRINTS", (keys.fingerprint,)):
+                with self.assertRaises(copy.PreauthRefused) as caught:
+                    copy.check(
+                        data, signature, repo=base.REPO, base_rev=base.CURRENT_BASE,
+                        contract_sha256=base.CONTRACT, tier="T3", now=base.NOW,
+                        facts=base.facts(),
+                        is_ancestor=lambda older, newer: older == base.SIGNED_BASE and newer == base.CURRENT_BASE,
+                    )
+            self.assertEqual(caught.exception.reason, "envelope_signers_invalid")
+            self.assertEqual(caught.exception.args, (caught.exception.reason,))
+        finally:
+            keys.close()
+            intruder.close()
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
