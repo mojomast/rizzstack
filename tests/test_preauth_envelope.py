@@ -26,6 +26,14 @@ bypasses) still pins the verify module and refuses every earlier stub.
 Every checker call in this file runs with process creation recorded: the only program ever
 started is ``/usr/bin/ssh-keygen -Y verify``, never ``-Y sign``.
 
+r6: preauth.py may call open() only with one of exactly two module constants built from
+``__file__`` and string literals (the base checkout's ``policy/allowed_signers`` and
+``policy/preauth.md``), and check() is spied to open exactly those two paths; print and writes
+to stdout/stderr are banned; every refusal is raised through the one canonical ``refuse()``
+helper with a literal reason from the closed set ``REFUSAL_REASONS`` (no interpolation).  The
+frozen verifier also caps data and signature sizes and requires ssh-keygen's ``Good
+"rizzstack-preauth" signature for <issuer> with`` stdout line.
+
 Wiring the checker into the gate/lane is the separate named slice ``preauth-wiring``; its frozen
 rules (``WiringFreezeTest``) scan every file under .github/ and scripts/ now.
 
@@ -38,6 +46,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import builtins
 import hashlib
 import importlib.util
 import inspect
@@ -64,8 +73,21 @@ PROCESS_FIXTURES = ROOT / "tests" / "fixtures" / "preauth"
 SCRIPTS = ROOT / "scripts"
 VERIFY_MODULE = SCRIPTS / "preauth_verify.py"
 #: The frozen verifier.  Changing scripts/preauth_verify.py needs a new owner-approved contract.
-PREAUTH_VERIFY_SHA256 = "181d5ab1ebb23d7bb27d55ab44e57f6c2e213b834c4a95ee5e226075935143a9"  # gitleaks:allow (sha256 of a committed file, not a secret)
+PREAUTH_VERIFY_SHA256 = "0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b"  # gitleaks:allow (sha256 of a committed file, not a secret)
 VERIFY_ENTRY = "_ssh_verify"
+POLICY_DOC = ROOT / "policy" / "preauth.md"
+#: r6: stands in for the policy file in the decision tests (check() reads the real one).
+TEST_POLICY = b"# preauth policy under test\n"
+#: r6: the closed set of refusal reasons.  Every PreauthRefused carries exactly one of these.
+REFUSAL_REASONS = frozenset({
+    "envelope_schema_invalid", "envelope_clock_invalid", "envelope_policy_unproven",
+    "envelope_signers_invalid", "envelope_signer_untrusted", "envelope_bad_signature",
+    "envelope_verifier_unavailable", "envelope_expired", "envelope_not_yet_valid",
+    "envelope_ttl_exceeded", "envelope_facts_unproven", "envelope_revoked", "envelope_action_forbidden",
+    "envelope_repo_mismatch", "envelope_base_mismatch", "envelope_contract_not_listed",
+    "envelope_tier_exceeded", "envelope_oracle_unproven", "envelope_oracle_changed",
+    "envelope_nonce_reused", "envelope_replayed", "envelope_budget_exhausted",
+})
 
 #: The frozen trust root.  Changing policy/allowed_signers needs a new owner-approved contract.
 ALLOWED_SIGNERS_SHA256 = "be7d243277ad0073c9d03dc09355f1b769824cde7c2ed0b662c0c190d19973ee"
@@ -194,6 +216,8 @@ class ProcessRecorder:
             raise FileNotFoundError(2, "No such file or directory", argv[0])
         if self.fail == "timeout":
             return _HangingProcess(argv, self)
+        if isinstance(self.fail, tuple) and self.fail[0] == "exit0":
+            return _FinishedProcess(argv, self.fail[1])
         if self.hook is not None:
             self.hook(argv)
         self.inside = True  # the recorded Popen may itself use os.posix_spawn/fork_exec
@@ -273,6 +297,33 @@ class _HangingProcess:
         return False
 
 
+class _FinishedProcess(_HangingProcess):
+    """A process that already exited 0 with the given stdout (no real ssh-keygen ran)."""
+
+    def __init__(self, argv, stdout):
+        self.args, self.returncode, self.pid, self.out = argv, 0, 0, stdout
+        self.stdin = self.stdout = self.stderr = None
+
+    def communicate(self, input=None, timeout=None):
+        return self.out, b""
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+    terminate = kill
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _signers_bytes(path):
+    path = Path(path)
+    return path.read_bytes() if path.is_file() else None
+
+
 class EnvelopeCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -289,16 +340,22 @@ class EnvelopeCase(unittest.TestCase):
         data = data if data is not None else json.dumps(value if value is not None else envelope(),
                                                         sort_keys=True).encode("utf-8")
         signature = signature if signature is not None else self.keys.sign(data)
+        signers = signers or self.keys.signers
         with ProcessRecorder(self, fail) as self.recorder:
+            # r6: preauth.py opens only its two pinned files, so the test-only entry point gets the
+            # trust-root bytes (and the path ssh-keygen reads) and the policy bytes from the test
             return self.pre._check_for_tests(
-                data, signature, allowed_signers=str(signers or self.keys.signers),
-                trusted_fingerprints=frozenset(trusted if trusted is not None else {self.keys.fingerprint}),
+                data, signature, allowed_signers=str(signers), allowed_signers_bytes=_signers_bytes(signers),
+                policy_bytes=TEST_POLICY, trusted_fingerprints=frozenset(trusted if trusted is not None else {self.keys.fingerprint}),
                 repo=repo, base_rev=base, contract_sha256=contract, tier=tier, now=now,
                 facts=measured if measured is not None else facts(), is_ancestor=is_ancestor)
 
     def refused(self, reason, *args, **kwargs):
         with self.assertRaises(self.pre.PreauthRefused) as caught:
             self.decide(*args, **kwargs)
+        # r6: every refusal is one reason from the closed set, carried verbatim and nothing else
+        self.assertIn(caught.exception.reason, REFUSAL_REASONS)
+        self.assertEqual(caught.exception.args, (caught.exception.reason,))
         self.assertEqual(caught.exception.reason, reason)
 
 
@@ -310,6 +367,9 @@ class SignatureTest(EnvelopeCase):
         self.assertEqual(decision["contract_sha256"], CONTRACT)
         self.assertEqual(decision["max_tier"], "T3")
         self.assertEqual(len(self.recorder.calls), 1, self.recorder.calls)
+        self.assertEqual(decision["policy_sha256"], hashlib.sha256(TEST_POLICY).hexdigest())
+        self.assertEqual(decision["allowed_signers_sha256"],
+                         hashlib.sha256(self.keys.signers.read_bytes()).hexdigest())
 
     def test_tampered_envelope_is_a_bad_signature(self):
         data = json.dumps(envelope(), sort_keys=True).encode()
@@ -700,10 +760,20 @@ class ProductionEntryPointTest(unittest.TestCase):
                       facts=facts(), is_ancestor=lambda older, newer: older == SIGNED_BASE)
         kwargs.update(overrides)
         signature = self.keys.sign(data)
-        with ProcessRecorder(self):
+        self.opened = []
+        real_open = builtins.open
+
+        def spy(file, *args, **kw):
+            self.opened.append(file)
+            return real_open(file, *args, **kw)
+
+        with ProcessRecorder(self), mock.patch("builtins.open", spy):
             return module.check(data, signature, **kwargs)
 
-    def tree(self, signer_lines):
+    def opened_paths(self):
+        return sorted(os.path.realpath(os.fsdecode(p)) for p in self.opened)
+
+    def tree(self, signer_lines, policy=b"# preauth policy in the base checkout\n"):
         root = Path(tempfile.mkdtemp(prefix="preauth-tree-"))
         self.addCleanup(shutil.rmtree, root, True)
         (root / "scripts").mkdir()
@@ -711,6 +781,8 @@ class ProductionEntryPointTest(unittest.TestCase):
         shutil.copyfile(MODULE, root / "scripts" / "preauth.py")
         shutil.copyfile(VERIFY_MODULE, root / "scripts" / "preauth_verify.py")
         (root / "policy" / "allowed_signers").write_text("".join(l + "\n" for l in signer_lines))
+        if policy is not None:
+            (root / "policy" / "preauth.md").write_bytes(policy)
         return root
 
     def test_owner_fingerprints_constant_is_frozen_and_equals_the_test_pin(self):
@@ -761,6 +833,48 @@ class ProductionEntryPointTest(unittest.TestCase):
         finally:
             os.chdir(cwd)
         self.assertEqual(caught.exception.reason, "envelope_signer_untrusted")
+
+    def test_check_opens_exactly_the_policy_and_the_trust_root(self):
+        root = self.tree([self.keys.line])
+        copy = _load_copy(root, "preauth_tree_open_spy")
+        want = sorted(os.path.realpath(root / "policy" / name) for name in ("allowed_signers", "preauth.md"))
+        with mock.patch.object(copy, "OWNER_FINGERPRINTS", (self.keys.fingerprint,)):
+            decision = self.call(copy)
+        self.assertTrue(decision["ok"])
+        self.assertEqual(self.opened_paths(), want, "check() opens exactly its two pinned files, once each")
+        self.assertEqual(decision["policy_sha256"],
+                         hashlib.sha256((root / "policy" / "preauth.md").read_bytes()).hexdigest())
+        self.assertEqual(decision["allowed_signers_sha256"],
+                         hashlib.sha256((root / "policy" / "allowed_signers").read_bytes()).hexdigest())
+        # refusals open nothing else either (empty module pin; a malformed envelope)
+        with self.assertRaises(copy.PreauthRefused):
+            self.call(copy)
+        self.assertLessEqual(set(self.opened_paths()), set(want))
+        self.assertEqual(len(self.opened), len(set(self.opened_paths())))
+        with mock.patch.object(copy, "OWNER_FINGERPRINTS", (self.keys.fingerprint,)):
+            with self.assertRaises(copy.PreauthRefused):
+                self.call(copy, repo=OTHER_REPO)
+        self.assertLessEqual(set(self.opened_paths()), set(want))
+
+    def test_a_missing_policy_file_refuses(self):
+        root = self.tree([self.keys.line], policy=None)
+        copy = _load_copy(root, "preauth_tree_no_policy")
+        with mock.patch.object(copy, "OWNER_FINGERPRINTS", (self.keys.fingerprint,)):
+            with self.assertRaises(copy.PreauthRefused) as caught:
+                self.call(copy)
+        self.assertEqual(caught.exception.reason, "envelope_policy_unproven")
+        self.assertLessEqual(set(self.opened_paths()), {os.path.realpath(root / "policy" / n)
+                                                        for n in ("allowed_signers", "preauth.md")})
+
+    def test_refusal_reasons_are_a_closed_set(self):
+        self.assertEqual(frozenset(self.pre.REFUSAL_REASONS), REFUSAL_REASONS)
+        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
+        used = {node.args[0].value for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "refuse"
+                and node.args and isinstance(node.args[0], ast.Constant)}
+        self.assertTrue(used)
+        self.assertLessEqual(used, REFUSAL_REASONS)
+        self.assertEqual(preauth_r6_violations(tree), [])
 
     def test_overrides_live_only_in_the_test_only_entry_point(self):
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))
@@ -1387,13 +1501,23 @@ PREAUTH_VALUE_ATTRS = {"re.ASCII", "re.IGNORECASE", "json.JSONDecodeError", "bin
 PREAUTH_PRIVATE_DEFS = {"_check_for_tests", "_decide"}
 PREAUTH_DUNDER_NAMES = {"__file__"}
 PREAUTH_BANNED_NAMES = BANNED_NAMES | {"type", "object", "super", "property", "classmethod", "staticmethod",
-                                       "format", "dir", "hasattr", "open_code", "__build_class__"}
+                                       "format", "dir", "hasattr", "open_code", "__build_class__", "print"}
 PREAUTH_BANNED_ATTRS = re.compile(BANNED_ATTRS.pattern[:-2] + r"|format|format_map|mro|modules|tb_next|"
-                                  r"ag_code|cr_code|f_lineno|f_trace|func_globals)$")
+                                  r"ag_code|cr_code|f_lineno|f_trace|func_globals|stdout|stderr|stdin|write|writelines|"
+                                  r"displayhook|excepthook)$")
 PREAUTH_PROTECTED = {"open", "isinstance", "len", "str", "int", "bool", "dict", "list", "set", "tuple",
-                     "frozenset", "sorted", "any", "all", "min", "max", "Exception", "print"}
+                     "frozenset", "sorted", "any", "all", "min", "max", "Exception"}
 PREAUTH_OPEN_MODES = {"r", "rb"}
 PREAUTH_MAX_OPENS = 2
+#: r6: open() takes only one of exactly two module constants, each ``<__file__ base> + <suffix>``.
+PREAUTH_OPEN_SUFFIXES = {"/policy/allowed_signers", "/policy/preauth.md"}
+PREAUTH_PATH_METHODS = {"rsplit", "rpartition"}
+#: r6: the one way to refuse.  Every call passes exactly one literal from REFUSAL_REASONS.
+PREAUTH_REFUSE_HELPER = (
+    "def refuse(reason):\n"
+    "    error = PreauthRefused(reason)\n"
+    "    error.reason = reason\n"
+    "    raise error\n")
 
 
 def preauth_violations(source):
@@ -1496,6 +1620,102 @@ def preauth_violations(source):
                 out.append("banned_attr:" + node.attr)
     if opens > PREAUTH_MAX_OPENS:
         out.append("open_calls:%d" % opens)
+    out.extend(preauth_r6_violations(tree))
+    return sorted(set(out))
+
+
+def _file_base(node):
+    """True for __file__, or __file__ narrowed by rsplit/rpartition with literal args and int indexes."""
+    if isinstance(node, ast.Name):
+        return node.id == "__file__"
+    if isinstance(node, ast.Subscript):
+        return (isinstance(node.slice, ast.Constant) and type(node.slice.value) is int
+                and _file_base(node.value))
+    if isinstance(node, ast.Call):
+        return (isinstance(node.func, ast.Attribute) and node.func.attr in PREAUTH_PATH_METHODS
+                and not node.keywords and node.args
+                and all(isinstance(a, ast.Constant) and (type(a.value) is int or (
+                    isinstance(a.value, str) and a.value and ".." not in a.value)) for a in node.args)
+                and _file_base(node.func.value))
+    return False
+
+
+def _open_path_suffix(value):
+    if (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add) and isinstance(value.right, ast.Constant)
+            and value.right.value in PREAUTH_OPEN_SUFFIXES and _file_base(value.left)):
+        return value.right.value
+    return None
+
+
+def _canonical_refuse(node):
+    body = node.body[1:] if (node.body and isinstance(node.body[0], ast.Expr)
+                             and isinstance(node.body[0].value, ast.Constant)) else node.body
+    shape = ast.FunctionDef(name=node.name, args=node.args, body=body, decorator_list=node.decorator_list,
+                            returns=node.returns, type_comment=None, type_params=[])
+    want = ast.parse(PREAUTH_REFUSE_HELPER).body[0]
+    want.type_params = []
+    return ast.dump(shape) == ast.dump(want)
+
+
+def preauth_r6_violations(tree):
+    """r6 additions: pinned open() paths, a closed set of literal refusal reasons, one refuse() helper."""
+    out, parents = [], _parents(tree)
+    constants, file_ok = {}, set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(n, ast.Name) and n.id == "__file__"
+                                                for n in ast.walk(node.value)):
+            name = node.targets[0].id if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) else None
+            suffix = _open_path_suffix(node.value)
+            if name is None or not name.isupper() or suffix is None:
+                out.append("open_path_constant_invalid:%s" % (name or "?"))
+            else:
+                constants[name] = suffix
+                file_ok.update(id(n) for n in ast.walk(node.value))
+    if len(constants) != 2 or set(constants.values()) != PREAUTH_OPEN_SUFFIXES:
+        out.append("open_path_constants:%d" % len(constants))
+    stores, opened = {}, set()
+    helpers = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "refuse"]
+    helper = helpers[0] if len(helpers) == 1 and _canonical_refuse(helpers[0]) else None
+    if helpers and helper is None:
+        out.append("refuse_helper_not_canonical")
+    inside = set(id(n) for n in ast.walk(helper)) if helper is not None else set()
+    for node in ast.walk(tree):
+        for name in ([node.id] if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) else
+                     [node.arg] if isinstance(node, ast.arg) else
+                     [node.name] if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.ExceptHandler))
+                     and node.name else
+                     [a.asname or a.name for a in node.names] if isinstance(node, (ast.Import, ast.ImportFrom))
+                     else []):
+            stores[name] = stores.get(name, 0) + 1
+        if isinstance(node, ast.Name) and node.id == "__file__" and id(node) not in file_ok:
+            out.append("file_reference")
+        if isinstance(node, ast.ClassDef) and node.name != "PreauthRefused":
+            out.append("class_name:" + node.name)
+        if isinstance(node, ast.Raise) and id(node) not in inside:
+            out.append("raise_statement")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
+            first = node.args[0] if node.args else None
+            if isinstance(first, ast.Name) and first.id in constants:
+                opened.add(first.id)
+            else:
+                out.append("open_path_not_constant")
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            parent = parents.get(id(node))
+            if node.id == "PreauthRefused" and id(node) not in inside and not _in_except_type(node, parents):
+                out.append("refusal_outside_helper")
+            if node.id == "refuse":
+                if not (isinstance(parent, ast.Call) and parent.func is node and len(parent.args) == 1
+                        and not parent.keywords and isinstance(parent.args[0], ast.Constant)
+                        and parent.args[0].value in REFUSAL_REASONS):
+                    out.append("reason_not_enumerated")
+    for name in list(constants) + ["refuse", "PreauthRefused"]:
+        if stores.get(name, 0) > 1:
+            out.append("rebind:" + name)
+    for name in constants:
+        if name not in opened:
+            out.append("open_path_unused:" + name)
+    if helper is None:
+        out.append("refuse_helper_missing")
     return sorted(set(out))
 
 
@@ -1583,13 +1803,76 @@ class PreauthRuleTest(unittest.TestCase):
     def test_every_preauth_stub_is_refused_for_its_own_reason(self):
         found = sorted(p.stem for p in (PROCESS_FIXTURES / "preauth_must_fail").glob("*.py"))
         self.assertEqual(found, sorted(self.MUST_FAIL))
-        safe = set((PROCESS_FIXTURES / "safe_preauth.py").read_text(encoding="utf-8").splitlines())
+        # the r5 stubs were cut from the r5 control, kept verbatim as safe_preauth_r5.py
+        safe = set((PROCESS_FIXTURES / "safe_preauth_r5.py").read_text(encoding="utf-8").splitlines())
         for name, code in self.MUST_FAIL.items():
             source = self.stub(name)
             extra = [line for line in source.splitlines() if line not in safe]
             self.assertTrue(extra, name)
             self.assertLessEqual(len(extra), 12, (name, extra))
             self.assertIn(code, preauth_violations(source), name)
+
+    #: r6 stubs (safe_preauth.py plus one bypass): reads beyond the two pinned files, print and
+    #: stdout/stderr writes, and refusal reasons that could carry file contents.
+    MUST_FAIL_R6 = {
+        "proc_environ_literal": "open_path_not_constant",
+        "proc_environ_constant": "open_path_not_constant",
+        "file_relative_secret": "open_path_constant_invalid:SECRET",
+        "dotdot_in_base": "open_path_constant_invalid:POLICY",
+        "third_constant": "open_path_constants:3",
+        "file_reference": "file_reference",
+        "rebind_constant": "rebind:TRUST_ROOT",
+        "loop_many_reads": "open_path_not_constant",
+        "loop_over_constants": "open_path_not_constant",
+        "parameter_shadows_constant": "rebind:TRUST_ROOT",
+        "open_keyword_path": "open_path_not_constant",
+        "print_leak": "banned_name:print",
+        "print_hook": "banned_name:print",
+        "stdout_write": "banned_attr:stdout",
+        "stderr_write": "banned_attr:stderr",
+        "write_attr": "banned_attr:write",
+        "reason_interpolated": "reason_not_enumerated",
+        "reason_fstring": "reason_not_enumerated",
+        "reason_unknown": "reason_not_enumerated",
+        "reason_variable": "reason_not_enumerated",
+        "reason_keyword": "reason_not_enumerated",
+        "refuse_reference": "reason_not_enumerated",
+        "direct_raise": "raise_statement",
+        "raise_other": "raise_statement",
+        "refusal_alias": "refusal_outside_helper",
+        "helper_not_canonical": "refuse_helper_not_canonical",
+        "second_class": "class_name:Leak",
+    }
+    #: GROKCHAT round-5 stubs, committed verbatim (cut from the r5 control).
+    GROKCHAT_R5 = {
+        "secret_read_print": ("banned_name:print", "open_path_not_constant"),
+        "loop_many_reads": ("open_path_not_constant",),
+        "file_relative_read": ("file_reference", "reason_not_enumerated", "open_path_not_constant"),
+        "lambda_json_hook": ("banned_name:print",),
+    }
+
+    def test_round_six_stubs_are_refused_for_their_own_reason(self):
+        folder = PROCESS_FIXTURES / "preauth_must_fail_r6"
+        self.assertEqual(sorted(p.stem for p in folder.glob("*.py")), sorted(self.MUST_FAIL_R6))
+        safe = set((PROCESS_FIXTURES / "safe_preauth.py").read_text(encoding="utf-8").splitlines())
+        for name, code in self.MUST_FAIL_R6.items():
+            source = (folder / (name + ".py")).read_text(encoding="utf-8")
+            extra = [line for line in source.splitlines() if line not in safe]
+            self.assertTrue(extra, name)
+            self.assertLessEqual(len(extra), 12, (name, extra))
+            self.assertIn(code, preauth_violations(source), name)
+
+    def test_grokchat_round_five_stubs_are_refused(self):
+        folder = PROCESS_FIXTURES / "grokchat_r5"
+        self.assertEqual(sorted(p.stem for p in folder.glob("*.py")), sorted(self.GROKCHAT_R5))
+        self.assertIn('open("/proc/self/environ", "rb")', (folder / "secret_read_print.py").read_text(encoding="utf-8"))
+        for name, codes in self.GROKCHAT_R5.items():
+            got = preauth_violations((folder / (name + ".py")).read_text(encoding="utf-8"))
+            for code in codes:
+                self.assertIn(code, got, name)
+        # the r5 control itself now fails: it opens a parameter and builds refusals in a helper call
+        self.assertIn("open_path_not_constant",
+                      preauth_violations((PROCESS_FIXTURES / "safe_preauth_r5.py").read_text(encoding="utf-8")))
 
     def test_every_earlier_process_stub_is_refused_by_the_preauth_rule(self):
         stubs = sorted((PROCESS_FIXTURES / "must_fail").glob("*.py"))
@@ -1634,6 +1917,7 @@ class PreauthRuleTest(unittest.TestCase):
         with mock.patch.object(pre, VERIFY_ENTRY, spy), ProcessRecorder(self) as recorder:
             decision = pre._check_for_tests(
                 data, signature, allowed_signers=str(keys.signers),
+                allowed_signers_bytes=keys.signers.read_bytes(), policy_bytes=TEST_POLICY,
                 trusted_fingerprints=frozenset({keys.fingerprint}), repo=REPO, base_rev=CURRENT_BASE,
                 contract_sha256=CONTRACT, tier="T3", now=NOW, facts=facts(),
                 is_ancestor=lambda older, newer: older == SIGNED_BASE and newer == CURRENT_BASE)
@@ -1752,6 +2036,25 @@ class FrozenVerifyModuleTest(unittest.TestCase):
             result, recorder = self.verify(**kwargs)
             self.assertIs(result, False, kwargs)
             self.assertEqual(recorder.calls, [], kwargs)
+
+    def test_oversized_data_or_signature_is_false_without_a_process(self):
+        self.assertEqual(self.mod._MAX_DATA_BYTES, 65536)
+        self.assertEqual(self.mod._MAX_SIGNATURE_BYTES, 8192)
+        for kwargs in ({"data": b"x" * 65537}, {"signature": b"s" * 8193}):
+            result, recorder = self.verify(**kwargs)
+            self.assertIs(result, False, list(kwargs))
+            self.assertEqual(recorder.calls, [], list(kwargs))
+
+    def test_exit_zero_needs_the_good_signature_line_for_the_issuer(self):
+        good = b'Good "rizzstack-preauth" signature for kyle with ED25519 key SHA256:' + b"A" * 43 + b"\n"
+        for stdout in (b"", b"Good signature\n", good.replace(b"rizzstack-preauth", b"git"),
+                       good.replace(b"for kyle", b"for bob"), good.replace(b"for kyle", b"for kyle2"),
+                       good + good, b"x" + good, good.replace(b" with ", b" by ")):
+            result, recorder = self.verify(fail=("exit0", stdout))
+            self.assertIs(result, False, stdout)
+            self.assertEqual(len(recorder.calls), 1)
+        result, _ = self.verify(fail=("exit0", good))
+        self.assertIs(result, True)
 
     def test_a_path_hijack_does_not_reach_the_frozen_verifier(self):
         fake = Path(tempfile.mkdtemp(prefix="preauth-hijack-"))
