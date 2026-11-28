@@ -1,0 +1,55 @@
+{
+  "branch": "feat/gate-authority",
+  "contract_id": "gate-authority",
+  "contract_sha256": "8cfd55f59f59cedda30a008053b92cb3b484c60b663aca0e37c9af0464b93dc8",
+  "derived_from": {
+    "approved_at": "2026-11-28T01:45:20Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract": ".rizzstack/contracts/8cfd55f59f59cedda30a008053b92cb3b484c60b663aca0e37c9af0464b93dc8.json"
+  },
+  "id": "gate-authority",
+  "lease_version": "rizzstack.lease/1",
+  "review": {
+    "approved_at": "2026-11-28T01:45:20Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
+    "status": "frozen"
+  },
+  "scope": {
+    "assigned_files": [
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      ".github/workflows/gate-authority.yml",
+      ".github/workflows/review-rerun.yml",
+      ".github/scripts/gate_drill.py",
+      ".github/scripts/gate_drill.lock.json",
+      "tests/fixtures/shared_policy.sha256"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/workflows/gitleaks.yml",
+      ".github/workflows/codemap.yml",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "tests/fixtures/review_lines.json",
+      "tests/test_risk_tier.py",
+      "tests/test_ci_workflows.py",
+      "tests/test_gate_drill.py",
+      "policy/rulesets/**"
+    ],
+    "test_files": [
+      "tests/test_gate_authority.py",
+      "tests/test_lease_tamper.py",
+      "tests/test_merge_lane_v5.py",
+      "tests/fixtures/workflows/**",
+      "tests/fixtures/gate_drill.lock.main.json"
+    ]
+  },
+  "slice": "gate-authority",
+  "source_rev": "abb5e660bd307ced68bffc1fb1e7c4d80524a3be",
+  "verify_sha": "ac30e7cc5cd004b3766fe6b2b51d2415b3584d39"
+}

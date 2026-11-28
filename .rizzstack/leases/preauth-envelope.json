@@ -1,0 +1,50 @@
+{
+  "branch": "feat/preauth-envelope",
+  "contract_id": "preauth-envelope",
+  "contract_sha256": "c413827ed596969626234b6ea5d296a81d46f4df05f7787afe5ec12156601872",
+  "derived_from": {
+    "approved_at": "2026-11-28T01:45:26Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract": ".rizzstack/contracts/c413827ed596969626234b6ea5d296a81d46f4df05f7787afe5ec12156601872.json"
+  },
+  "id": "preauth-envelope",
+  "lease_version": "rizzstack.lease/1",
+  "review": {
+    "approved_at": "2026-11-28T01:45:26Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
+    "status": "frozen"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/preauth.py",
+      "policy/preauth.md",
+      "policy/README.md",
+      "schemas/preauth.schema.json"
+    ],
+    "prohibited": [
+      "CHANGELOG.md",
+      ".rizzstack/**",
+      ".github/**",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "policy/allowed_signers",
+      ".github/scripts/lease_tamper.py",
+      "scripts/merge_lane_v5.py",
+      "policy/rulesets/**",
+      "scripts/preauth_verify.py",
+      "contracts/preauth-wiring.requirements.json"
+    ],
+    "test_files": [
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/fixtures/preauth/**"
+    ]
+  },
+  "slice": "preauth-envelope",
+  "source_rev": "1e3788b822293840726374b7e1421a1a0924f72b",
+  "verify_sha": "8b1fcda2597349bc7a3b2d9d37067ba240ada9c3"
+}
