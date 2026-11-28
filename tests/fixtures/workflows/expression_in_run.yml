@@ -1,0 +1,26 @@
+# Untrusted pull request text interpolated into a shell.  Must be refused.
+name: gate-authority
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  gate-authority:
+    name: gate-authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: fetch
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+      - name: judge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "${{ github.event.pull_request.title }}" && python3 .github/scripts/lease_tamper.py
