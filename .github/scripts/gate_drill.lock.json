@@ -9,6 +9,15 @@
       "kind": "tier",
       "what": "risk tier: AGENTS.md is T3 (an agent instruction, not documentation)"
     },
+    "tier-auth-surface": {
+      "digest": "e088562f719a2e1078611cec0e51c03f827d6cdb8fdc47bf8d42b6723ee02e5c",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "auth_surface:src/permissions.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: an auth/permission surface is T3"
+    },
     "tier-build-system": {
       "digest": "93c004d858cf23fe38eb1590d4b68b6f758304f8ee35ff4a8518ea3046d34cae",
       "expect_class": "slice",
@@ -17,6 +26,33 @@
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a build-system bump in pyproject.toml is T3 (not allowlisted)"
+    },
+    "tier-capability-network": {
+      "digest": "f11f310bcc237bec68bb8d8297d54a42636bc8af3c10701ae62adfb93bf151fb",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "capability_network:src/slice.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: network capability on an otherwise-T1 path is T3"
+    },
+    "tier-capability-subprocess": {
+      "digest": "ea682de9cb09c8c282b86dbf8b75eeea5019958d46d0c3e5facf3b8ca502dcde",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "capability_subprocess:src/slice.py",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: subprocess capability on an otherwise-T1 path is T3"
+    },
+    "tier-ci-config": {
+      "digest": "67946148e4baad98c6a9b77fe83eba9a340ffc3303ea1d3e70429865f35b8590",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "ci_config:packages/widget/.github/workflows/ci.yml",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: nested CI configuration is T3"
     },
     "tier-claude-md": {
       "digest": "a5a4a5c93b300949e8a5e698e2edd829edc164e3f6883edd5c051b5cbc332d57",
@@ -44,6 +80,15 @@
       "expect_tier": "T3",
       "kind": "tier",
       "what": "risk tier: a [tool.coverage] table change is T3"
+    },
+    "tier-dependency-manifest": {
+      "digest": "f2b4fb64cd1137e7b2a4c3bc81ee12d4884e8b4379b81e4e862810f7c6d98a99",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "dependency_manifest:src/requirements.txt",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a dependency manifest is T3"
     },
     "tier-deploy": {
       "digest": "d3cc0dba070ec0fac588cedcc4aa13d9438c1f1d3b55a014dfdf2d3b31e90c73",
@@ -260,6 +305,24 @@
       "expect_tier": "T1",
       "kind": "tier",
       "what": "risk tier: a leased source change is T1"
+    },
+    "tier-test-infra": {
+      "digest": "88d647fae27be34ad9aded18d101a995feb691b39e54540085a81ca1a0d46ab7",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "test_infra:tests/fixtures/case.json",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a new test fixture is T3 test infrastructure"
+    },
+    "tier-unknown-kind": {
+      "digest": "957d1391f943d4aa8d6743b94917fa88ea58d2df7a10d7ec20c456aebc2f49ca",
+      "expect_class": "slice",
+      "expect_exit": 0,
+      "expect_reason": "unknown_kind:src/run.sh",
+      "expect_tier": "T3",
+      "kind": "tier",
+      "what": "risk tier: a shell script is an unknown file kind (T3)"
     },
     "tier-unknown-repo": {
       "digest": "04737a87e54b60dd6b01ede9a599ab795b8e0175c37b1d4b42ab4c4ca6226233",

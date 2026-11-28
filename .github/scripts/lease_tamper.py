@@ -229,7 +229,7 @@ MERGE_GROUP_REASON = "merge_group_pr_unresolved"
 #: re-checked against ``pull_request.head.sha`` for the same reason a push is:
 #: an approval or a rejection can change a non-slice pull request's answer, so
 #: the gate must judge the head the review is carried to, not the reviewed commit.
-PULL_REQUEST_EVENTS = ("pull_request", "pull_request_review")
+PULL_REQUEST_EVENTS = ("pull_request", "pull_request_review", "pull_request_target")
 
 # --- BEGIN SHARED GATE POLICY (vendored; keep byte-identical) ---------------
 # One implementation of the rules the lease/tamper gate and the merge lane both
@@ -252,6 +252,13 @@ REVIEW_APPROVE_INDEPENDENT = "approve_independent"
 REVIEW_APPROVE_OWNER = "approve_owner"
 REVIEW_CHANGES_REQUESTED = "changes_requested"
 REVIEW_APPROVAL_KINDS = (REVIEW_APPROVE_INDEPENDENT, REVIEW_APPROVE_OWNER)
+
+#: The only logins whose words are an attestation.  The review text never names
+#: an identity: a coordinator, a bee or any other account can copy the canonical
+#: line, and none of them is an approval.  A rejection still governs whatever
+#: account posted it.
+REVIEWER_LOGIN = "rizzstack-reviewer[bot]"
+OWNER_LOGIN = "mojomast"
 
 #: How a review matches the head: at the head itself, or carried from an
 #: earlier head by a base-merge-only update with an unchanged diff.
@@ -318,6 +325,44 @@ _CARRY_HEX = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 def _policy_text(value):
     return value if isinstance(value, str) else ""
+
+
+def _policy_login(review):
+    """The login GitHub authenticated for a review, or an empty string.
+
+    GitHub's REST review carries ``user.login``; the lane's measured facts carry
+    the same value as ``author``.  Any other shape (a missing user, a non-string
+    login, an empty login) is not an identity.
+    """
+    if not isinstance(review, dict):
+        return ""
+    for key in ("user", "author"):
+        value = review.get(key)
+        if isinstance(value, dict):
+            login = value.get("login")
+            if isinstance(login, str):
+                return login
+        elif isinstance(value, str):
+            return value
+    return ""
+
+
+def review_identity_ok(review):
+    """True only for the authenticated reviewer app login."""
+    return _policy_login(review) == REVIEWER_LOGIN
+
+
+def owner_identity_ok(review):
+    """True only for the authenticated owner login."""
+    return _policy_login(review) == OWNER_LOGIN
+
+
+def _approval_identity_ok(review, kind):
+    if kind == REVIEW_APPROVE_INDEPENDENT:
+        return review_identity_ok(review)
+    if kind == REVIEW_APPROVE_OWNER:
+        return owner_identity_ok(review)
+    return True
 
 
 def _policy_first_line(body):
@@ -413,10 +458,19 @@ def review_names_commit(named, commit):
 
 
 def review_is_approval(review, kind=None):
+    """True when ``review`` is an approval of ``kind`` from the right login.
+
+    An independent approval must come from the reviewer app and an owner
+    attestation from the owner login; the canonical text alone is never an
+    identity.  A rejection has no login requirement and still governs whoever
+    posted it.
+    """
     form, named = review_form(review)
     if form not in REVIEW_APPROVAL_KINDS:
         return False
     if kind is not None and form != kind:
+        return False
+    if not _approval_identity_ok(review, form):
         return False
     return review_names_commit(named, (review or {}).get("commit_id"))
 
@@ -484,6 +538,8 @@ def approvals_at_head(reviews, head, kind):
         form, named = review_form(review)
         if form != kind:
             continue
+        if not _approval_identity_ok(review, kind):
+            continue
         if _policy_text(review.get("commit_id")).strip().lower() != wanted:
             continue
         if not review_names_commit(named, wanted):
@@ -517,6 +573,8 @@ def approval_chain(reviews, head, kind, ancestor=None):
     for review in reversed(review_chronology(reviews)):
         form, named = review_form(review)
         if form != kind:
+            continue
+        if not _approval_identity_ok(review, kind):
             continue
         commit = _policy_text(review.get("commit_id")).strip().lower()
         if not commit or commit == wanted or commit in seen:
@@ -2006,6 +2064,53 @@ TIER_SCANNER_PATTERNS = (
         re.compile(r"\bunittest\s*\.\s*TestCase\s*\.\s*assert[A-Za-z0-9_]*\s*=(?!=)"),
     ),
 )
+#: Capability scanners over added lines.  A path that is otherwise T1 becomes
+#: T3 when the change introduces a way to run code or reach the network; the
+#: language tag keeps a ``fetch(`` in documentation from being mistaken for a
+#: JavaScript network call.
+TIER_CAPABILITY_PATTERNS = (
+    ("py", "capability_subprocess", re.compile(r"^\s*(?:import|from)\s+(?:subprocess|pty|ctypes|multiprocessing|importlib)\b")),
+    ("py", "capability_subprocess", re.compile(r"\b__import__\s*\(")),
+    ("py", "capability_subprocess", re.compile(r"\bos\s*\.\s*(?:exec|spawn|posix_spawn|system|popen)")),
+    ("py", "capability_subprocess", re.compile(r"\b(?:eval|exec)\s*\(")),
+    ("py", "capability_subprocess", re.compile(r"\bimportlib\s*\.\s*import_module\b")),
+    ("js", "capability_subprocess", re.compile(r"(?:require|import)\s*\(\s*['\"](?:node:)?child_process['\"]")),
+    ("js", "capability_subprocess", re.compile(r"\bfrom\s+['\"](?:node:)?child_process['\"]")),
+    ("js", "capability_subprocess", re.compile(r"\bnew\s+Function\s*\(")),
+    ("py", "capability_network", re.compile(r"^\s*(?:import|from)\s+(?:socket|ssl|urllib|http|ftplib|smtplib|telnetlib|xmlrpc)\b")),
+    ("py", "capability_network", re.compile(r"\b(?:asyncio\s*\.\s*)?open_connection\s*\(")),
+    ("js", "capability_network", re.compile(r"\bfetch\s*\(")),
+    ("js", "capability_network", re.compile(r"\bnew\s+WebSocket\b|\bWebSocket\s*\(")),
+    ("js", "capability_network", re.compile(r"\bnavigator\s*\.\s*sendBeacon\b|\bsendBeacon\s*\(")),
+    ("js", "capability_network", re.compile(r"\bnew\s+XMLHttpRequest\b|\bXMLHttpRequest\b")),
+    ("js", "capability_network", re.compile(r"\bfrom\s+['\"]node:net['\"]|\brequire\s*\(\s*['\"]node:net['\"]")),
+)
+
+#: File kinds the allowlist never understands: scripts, compiled artifacts,
+#: notebooks, makefiles and extensionless files are T3.  Executable bits,
+#: symlinks and submodules are detected from the raw diff, not the name.
+TIER_UNKNOWN_SUFFIXES = (
+    ".sh", ".bash", ".zsh", ".ksh", ".fish", ".ps1", ".bat", ".cmd",
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib",
+    ".class", ".jar", ".war", ".whl", ".pyc", ".pyo", ".pyd", ".ipynb",
+)
+TIER_MAKE_NAMES = frozenset(("makefile", "gnumakefile"))
+TIER_DEPENDENCY_NAMES = frozenset((
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "bun.lockb", "pipfile", "pipfile.lock", "poetry.lock",
+    "uv.lock", "cargo.toml", "cargo.lock", "go.mod", "go.sum", "gemfile",
+    "gemfile.lock", "composer.json", "composer.lock", "pom.xml",
+    "build.gradle", "build.gradle.kts", "pyproject.toml", "setup.py",
+    "setup.cfg", "manifest.in",
+))
+TIER_TEST_INFRA_NAMES = frozenset(("__init__.py", "helpers.py", "helper.py", "fixtures.py"))
+TIER_TEST_INFRA_SEGMENTS = frozenset(("fixtures", "__fixtures__", "helpers", "support"))
+TIER_AUTH_TOKENS = frozenset((
+    "auth", "oauth", "credential", "credentials", "secret", "secrets", "token",
+    "permission", "permissions", "approval", "approvals", "validator",
+    "validators", "sandbox", "sandboxes",
+))
+
 TIER_PACKAGING_TABLES = (
     ("build-system",),
     ("tool", "hatch", "build"),
@@ -2182,6 +2287,110 @@ def _tier_is_deploy_path(path):
 def _tier_is_scanned(path):
     base = _tier_basename(path).lower()
     return base in TIER_SCAN_NAMES or base.endswith(TIER_SCAN_SUFFIXES)
+
+
+def _tier_is_dependency_manifest(path):
+    base = _tier_basename(path).lower()
+    if base in TIER_DEPENDENCY_NAMES:
+        return True
+    return (
+        base.endswith(".txt")
+        and (base.startswith("requirements") or base.startswith("constraints"))
+    )
+
+
+def _tier_is_test_infra(path):
+    normal = _tier_normalise(path).lower()
+    parts = normal.split("/")
+    base = parts[-1]
+    if base in TIER_TEST_INFRA_NAMES:
+        return True
+    if not (_tier_is_test_path(normal) or any(segment in TIER_TEST_DIR_SEGMENTS for segment in parts)):
+        return False
+    return any(segment in TIER_TEST_INFRA_SEGMENTS for segment in parts[:-1])
+
+
+def _tier_is_nested_ci(path):
+    normal = _tier_normalise(path).lower()
+    padded = "/" + normal
+    if any(
+        marker in padded
+        for marker in ("/.github/workflows/", "/.github/actions/", "/.gitlab/", "/.circleci/")
+    ):
+        return True
+    return _tier_basename(normal) in (
+        ".gitlab-ci.yml",
+        ".travis.yml",
+        "azure-pipelines.yml",
+        "jenkinsfile",
+    )
+
+
+def _tier_is_auth_surface(path):
+    normal = _tier_normalise(path).lower()
+    tokens = set()
+    for segment in normal.split("/"):
+        tokens.update(token for token in re.split(r"[^a-z0-9]+", segment) if token)
+    return bool(tokens & TIER_AUTH_TOKENS)
+
+
+def _tier_is_unknown_kind(path):
+    base = _tier_basename(path).lower()
+    if base in TIER_MAKE_NAMES:
+        return True
+    if base.endswith(TIER_UNKNOWN_SUFFIXES):
+        return True
+    # An extensionless file is a kind the allowlist does not understand.  A
+    # dotfile such as ``.gitignore`` also has no suffix and is not product code.
+    return "." not in base and bool(base)
+
+
+def _tier_capability_reasons(path, content):
+    base = _tier_basename(path).lower()
+    is_py = base.endswith((".py", ".pyi"))
+    is_js = base.endswith((".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"))
+    reasons = []
+    for lang, reason, pattern in TIER_CAPABILITY_PATTERNS:
+        if (lang == "py" and not is_py) or (lang == "js" and not is_js):
+            continue
+        if pattern.search(content) and reason not in reasons:
+            reasons.append(reason)
+    return reasons
+
+
+def _tier_raw_modes(repo, merge_base, head):
+    """``{path: (old_mode, new_mode)}`` from the raw diff (symlinks, gitlinks, modes)."""
+    proc = _run(
+        repo, "diff", "--raw", "-z", "--no-renames", merge_base, head, check=False
+    )
+    if proc.returncode != 0:
+        raise GateError("cannot read the raw change between %s and %s" % (merge_base[:12], head[:12]))
+    fields = proc.stdout.split("\0")
+    modes = {}
+    index = 0
+    while index + 1 < len(fields):
+        header, path = fields[index], fields[index + 1]
+        index += 2
+        if not header.startswith(":"):
+            continue
+        parts = header[1:].split()
+        if len(parts) < 5:
+            continue
+        modes[_tier_normalise(path)] = (parts[0], parts[1])
+    return modes
+
+
+def _tier_mode_reasons(path, modes):
+    if modes is None:
+        return ["unknown_kind"]
+    old_mode, new_mode = modes
+    if "160000" in (old_mode, new_mode):
+        return ["unknown_kind"]
+    if "120000" in (old_mode, new_mode):
+        return ["unknown_kind"]
+    if old_mode.endswith("755") or new_mode.endswith("755"):
+        return ["unknown_kind"]
+    return []
 
 
 def _tier_blob(repo, revision, path):
@@ -2389,6 +2598,16 @@ def _tier_path_reasons(repo, merge_base, head, status, path):
         reasons.append("deploy_config")
     if _tier_is_contract_path(normal):
         reasons.append("contracts")
+    if _tier_is_dependency_manifest(normal):
+        reasons.append("dependency_manifest")
+    if _tier_is_test_infra(normal):
+        reasons.append("test_infra")
+    if _tier_is_nested_ci(normal):
+        reasons.append("ci_config")
+    if _tier_is_auth_surface(normal):
+        reasons.append("auth_surface")
+    if _tier_is_unknown_kind(normal):
+        reasons.append("unknown_kind")
     if not reasons and sensitive_paths([normal]):
         # The shared list matches by explicit path, by prefix (machinery
         # directories, always T3) and by a file-name token.  A token match on a
@@ -2473,14 +2692,19 @@ def risk_tier(repo, base, head, repo_name=None, environ=None):
         if allowlist is None:
             add("repo_unknown", name)
             allowlist = ()
+        modes = _tier_raw_modes(repo, merge_base, head)
         for status, path in _tier_diff(repo, merge_base, head):
             for reason in _tier_path_reasons(repo, merge_base, head, status, path):
+                add(reason, path)
+            for reason in _tier_mode_reasons(path, modes.get(_tier_normalise(path))):
                 add(reason, path)
             if _tier_always_three(path):
                 add("always_t3", path)
             if not _tier_allowlisted(path, status, allowlist):
                 add("not_t1_allowlisted", path)
         for path, content in _tier_added_lines(repo, merge_base, head):
+            for reason in _tier_capability_reasons(path, content):
+                add(reason, _tier_normalise(path))
             if not _tier_is_scanned(path):
                 continue
             for kind, pattern in TIER_SCANNER_PATTERNS:

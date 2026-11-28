@@ -1,0 +1,26 @@
+# GROKCHAT's demonstrated pwn request (flow-style job permissions, base checkout, fetch of the
+# pull request head, `git reset --hard FETCH_HEAD`, then the PR's own gate copy runs).  It passed
+# all five regex workflow tests of the first S1 cut.  Must be refused.
+name: gate-authority
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  gate-authority:
+    name: gate-authority
+    runs-on: ubuntu-24.04
+    permissions: {contents: write, pull-requests: write, actions: write}
+    steps:
+      - name: base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: fetch
+        run: git fetch --no-tags origin refs/pull/${{ github.event.pull_request.number }}/head
+      - name: swap in the pull request tree
+        run: git reset --hard FETCH_HEAD
+      - name: judge
+        run: python3 .github/scripts/lease_tamper.py
