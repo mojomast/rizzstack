@@ -1,17 +1,17 @@
 {
   "branch": "feat/gate-authority",
   "contract_id": "gate-authority",
-  "contract_sha256": "f23d3ab3e390855f7cff4431ae48105a4b5a11411b9ac7670f112f830df97ee3",
+  "contract_sha256": "8cfd55f59f59cedda30a008053b92cb3b484c60b663aca0e37c9af0464b93dc8",
   "derived_from": {
-    "approved_at": "2026-11-28T00:36:44Z",
-    "approved_by": "Kyle (owner) typed: approved: f23d3ab3 2a3a2cad (gate-authority r5 and hyvv recovery-bounded), 2026-11-27",
-    "contract": ".rizzstack/contracts/f23d3ab3e390855f7cff4431ae48105a4b5a11411b9ac7670f112f830df97ee3.json"
+    "approved_at": "2026-11-28T01:45:20Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract": ".rizzstack/contracts/8cfd55f59f59cedda30a008053b92cb3b484c60b663aca0e37c9af0464b93dc8.json"
   },
   "id": "gate-authority",
   "lease_version": "rizzstack.lease/1",
   "review": {
-    "approved_at": "2026-11-28T00:36:44Z",
-    "approved_by": "Kyle (owner) typed: approved: f23d3ab3 2a3a2cad (gate-authority r5 and hyvv recovery-bounded), 2026-11-27",
+    "approved_at": "2026-11-28T01:45:20Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
     "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
     "status": "frozen"
   },

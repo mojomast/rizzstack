@@ -449,7 +449,7 @@
   "interfaces": [
     {
       "change": "add",
-      "kind": "constant",
+      "kind": "other",
       "name": "REVIEWER_LOGIN"
     },
     {
@@ -464,7 +464,7 @@
     },
     {
       "change": "modify",
-      "kind": "constant",
+      "kind": "other",
       "name": "PULL_REQUEST_EVENTS"
     },
     {
@@ -474,17 +474,17 @@
     },
     {
       "change": "modify",
-      "kind": "constant",
+      "kind": "other",
       "name": "MERGE_STATES"
     },
     {
       "change": "add",
-      "kind": "workflow",
+      "kind": "file",
       "name": ".github/workflows/gate-authority.yml"
     },
     {
       "change": "add",
-      "kind": "constant",
+      "kind": "other",
       "name": "OWNER_LOGIN"
     },
     {
@@ -514,7 +514,7 @@
     },
     {
       "change": "modify",
-      "kind": "workflow",
+      "kind": "file",
       "name": ".github/workflows/review-rerun.yml"
     },
     {
@@ -540,7 +540,8 @@
     "Optional, later: move the repos to an organization on the Team plan and then add the required-workflow rule for .github/workflows/gate-authority.yml (bearing in mind it would not fire on `edited`). An existing pull_request rule with required approvals could be an extra native-merge brake, but whether app-bot reviews count toward it is unverified.",
     "review-rerun.yml runs on pull_request_review with actions: write from the PR's merge ref (pre-existing); isolating it is flagged for S3.",
     "Vendoring: lease_tamper.py, gate-authority.yml and review-rerun.yml need byte-identical copies in workflow (canonical), bundlebees, hyvv, orbitdesktop, orbit-control-plane and uirizz.",
-    "gate_drill.py stays assigned so GREEN can add one drill case per new T3 reason; the frozen main lock copy makes existing cases append-only. A rewrite of gate_drill.py's hashing itself is left to GREEN review."
+    "gate_drill.py stays assigned so GREEN can add one drill case per new T3 reason; the frozen main lock copy makes existing cases append-only. A rewrite of gate_drill.py's hashing itself is left to GREEN review.",
+    "Schema re-cut of f23d3ab3 (metadata only; tests, scope, source_rev and acceptance criteria unchanged): acdd/1 allows interface kinds function, class, module, cli, http, schema, file, ui, other, so the original kinds were relabelled. Originals: REVIEWER_LOGIN: constant; PULL_REQUEST_EVENTS: constant; MERGE_STATES: constant; .github/workflows/gate-authority.yml: workflow; OWNER_LOGIN: constant; .github/workflows/review-rerun.yml: workflow. 'constant' became 'other'; 'workflow' became 'file'. Supersedes f23d3ab3."
   ],
   "outcome": {
     "observable_behavior": [
@@ -555,9 +556,9 @@
     "summary": "An independent approval counts only from the authenticated rizzstack-reviewer[bot] login and an owner attestation only from the owner login (mojomast); review text never names identity. The gate-authority workflow is exactly one base-pinned pull_request_target job (checked structurally by a strict YAML-subset parser) that fetches the PR head as objects and runs only the base gate with a contents:read token. Because a pull_request_target run reports on the base tip, the lane proves the gate through its workflow run: the newest gate-authority.yml pull_request_target run for this PR, at the exact head and the PR's current base ref, run from a commit on the current base whose gate code (gate-authority.yml, review-rerun.yml, .github/scripts/**) is unchanged at the tip, from github-actions in the same repository, green, and started after the newest review. A gate-authority check on the head is never the gate. GitHub's required check is not the authority, and on these personal-account repos no required-workflow rule can exist, so the lane is the only merge authority. review-rerun.yml re-runs that gate run after a submitted or dismissed review, whatever its conclusion. The T1 allowlist excludes capability, dependency, test-infra, nested CI, auth surfaces and unknown kinds, each with a drill case. The lane refuses BEHIND."
   },
   "review": {
-    "approved_at": "2026-11-28T00:36:44Z",
-    "approved_by": "Kyle (owner) typed: approved: f23d3ab3 2a3a2cad (gate-authority r5 and hyvv recovery-bounded), 2026-11-27",
-    "contract_sha256": "f23d3ab3e390855f7cff4431ae48105a4b5a11411b9ac7670f112f830df97ee3",
+    "approved_at": "2026-11-28T01:45:20Z",
+    "approved_by": "Kyle (owner) typed: approved: 8cfd55f5 c413827e (schema re-cuts of gate-authority r5 and preauth-envelope r6), 2026-11-27",
+    "contract_sha256": "8cfd55f59f59cedda30a008053b92cb3b484c60b663aca0e37c9af0464b93dc8",
     "status": "approved"
   },
   "risk": {
@@ -607,7 +608,8 @@
     "gate-authority draft 16ff193c (r1)",
     "gate-authority draft 35ff6308 (r2)",
     "gate-authority draft ab74a79f (r3)",
-    "gate-authority draft 5ec447c1 (r4)"
+    "gate-authority draft 5ec447c1 (r4)",
+    "gate-authority r5 f23d3ab3 (schema-invalid interface kinds)"
   ],
   "tdd": {
     "applicable": true
