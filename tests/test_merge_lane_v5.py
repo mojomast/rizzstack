@@ -45,7 +45,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 #: sha256 of the shared policy block and the shared fixtures.  The lease/tamper
 #: gate (workflow, vendored into hyvv) asserts the same values, so the two
 #: copies cannot drift silently.
-SHARED_POLICY_SHA256 = "f749821a6170379743a7e440edcb0d90141de8d04bf22ef9a3b6d28a78b83ec8"
+# The pinned hash of the shared gate/lane policy block lives in one fixture both suites read.
+SHARED_POLICY_SHA256 = (Path(__file__).resolve().parent / "fixtures" / "shared_policy.sha256").read_text(
+    encoding="ascii").strip()
 REVIEW_LINES_SHA256 = "ac2de684dd22fceed5aa2f18ac6d7d6f8c101c0fd67a619d2a2c6a663642311b"
 CARRY_FIXTURES_SHA256 = "33435d738b84742c8e2b5cfa3e153cf20921fb7a1985f808bbde68603941165e"
 SHARED_BLOCK_BEGIN = "# --- BEGIN SHARED GATE POLICY"
@@ -63,7 +65,7 @@ def approve(head=HEAD, state="COMMENTED", body=None):
     return {
         "state": state,
         "commit_id": head,
-        "author": "reviewer",
+        "author": "rizzstack-reviewer[bot]",
         "body": body
         if body is not None
         else "APPROVE (independent review at %s, hermes family)\n\nVERDICT: approve" % head,
@@ -74,7 +76,7 @@ def owner_approve(head=HEAD, state="COMMENTED", body=None):
     return {
         "state": state,
         "commit_id": head,
-        "author": "owner",
+        "author": "mojomast",
         "body": body
         if body is not None
         else "APPROVE (owner) at %s\n\nOne-time owner decision." % head,
@@ -187,7 +189,7 @@ class NonSliceTests(unittest.TestCase):
         self.assertEqual(verdict["reason"], "review_changes_requested")
 
     def test_github_approved_state_at_head_passes(self):
-        value = facts(reviews=[{"state": "APPROVED", "commit_id": HEAD, "body": ""}])
+        value = facts(reviews=[{"state": "APPROVED", "commit_id": HEAD, "body": "", "author": "rizzstack-reviewer[bot]"}])
         verdict = lane.decide(value)
         self.assertTrue(verdict["merge"], verdict)
 
@@ -687,7 +689,8 @@ class GateTests(unittest.TestCase):
         self.assertEqual(lane.decide(facts(pr={"mergeable": "MERGEABLE"}))["merge"], True)
         self.assertEqual(
             lane.decide(facts(pr={"merge_state_status": "DIRTY"}))["reason"], "merge_state_dirty")
-        self.assertTrue(lane.decide(facts(pr={"merge_state_status": "BEHIND"}))["merge"])
+        self.assertEqual(
+            lane.decide(facts(pr={"merge_state_status": "BEHIND"}))["reason"], "merge_state_behind")
 
     def test_absent_mergeable_or_draft_key_refuses(self):
         value = facts()
@@ -1012,7 +1015,7 @@ class ReviewCarryMeasurementTests(unittest.TestCase):
             },
             "class": lane.NON_SLICE,
             "reviews": [
-                {"state": "COMMENTED", "commit_id": self.reviewed,
+                {"state": "COMMENTED", "commit_id": self.reviewed, "author": "rizzstack-reviewer[bot]",
                  "body": "APPROVE (independent review at %s)" % self.reviewed}
             ],
             "checks": [{"name": "ci-gate", "status": "completed",
@@ -1219,7 +1222,7 @@ class SharedPolicyContractTests(unittest.TestCase):
             self.assertEqual(lane.parse_review_line(body)[0], kind, body)
 
     def test_owner_body_never_satisfies_the_independent_rule(self):
-        review = {"state": "APPROVED", "commit_id": HEAD,
+        review = {"state": "APPROVED", "commit_id": HEAD, "author": "mojomast",
                   "body": "APPROVE (owner) at %s" % HEAD}
         self.assertEqual(lane.review_form(review)[0], lane.REVIEW_APPROVE_OWNER)
         self.assertFalse(lane.review_is_approval(review, lane.REVIEW_APPROVE_INDEPENDENT))
@@ -1262,6 +1265,7 @@ class RejectionGovernsTests(unittest.TestCase):
             "commit_id": sha,
             "body": body if body is not None else "APPROVE (independent review) at %s" % sha,
             "submitted_at": submitted_at,
+            "author": "rizzstack-reviewer[bot]",
         }
 
     def test_rejection_at_the_approved_commit_refuses_the_carried_review(self):
@@ -1392,7 +1396,7 @@ class FetchFactsTests(unittest.TestCase):
                           {"filename": "tests/test_example.py"}]
         self.api.reviews = [
             {"state": "COMMENTED", "commit_id": OLDER, "body": "APPROVE (independent review) at " + OLDER,
-             "submitted_at": "2026-11-26T00:00:00Z", "user": {"login": "reviewer"}},
+             "submitted_at": "2026-11-26T00:00:00Z", "user": {"login": "rizzstack-reviewer[bot]"}},
         ]
         self.api.check_runs = [
             {"name": "ci-gate", "status": "completed", "conclusion": "success",
@@ -1422,7 +1426,7 @@ class FetchFactsTests(unittest.TestCase):
             "ran": True, "ok": True, "reason": "gate_ok", "head": HEAD,
             "output_tail": "lease-tamper: class=non-slice\n",
         })
-        repo = overrides.pop("repo_path", ".")
+        repo = overrides.pop("repo_path", self.tmp.name)
         return lane.collect_facts(
             "mojomast/workflow", 7, repo, "test-token",
             api_url="https://api.test", http=self.api, gate_record=gate,
@@ -1524,7 +1528,7 @@ class FetchFactsTests(unittest.TestCase):
                          ["bundlebees_plugin/example.py", "tests/test_example.py"])
         self.assertEqual(facts["reviews"][0]["commit_id"], OLDER)
         self.assertEqual(facts["reviews"][0]["submitted_at"], "2026-11-26T00:00:00Z")
-        self.assertEqual(facts["reviews"][0]["author"], "reviewer")
+        self.assertEqual(facts["reviews"][0]["author"], "rizzstack-reviewer[bot]")
         self.assertEqual(facts["checks"][0]["name"], "ci-gate")
         self.assertEqual(facts["checks"][0]["head"], HEAD)
         self.assertEqual(facts["required_checks"], ["ci-gate"])
