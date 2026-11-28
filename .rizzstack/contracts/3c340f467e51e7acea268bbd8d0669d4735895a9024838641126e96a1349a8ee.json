@@ -1,0 +1,360 @@
+{
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "statement": "Static wiring: scripts/merge_lane_v5.py calls sys.path.insert(0, <the directory of its own file>) and then has a top-level `import preauth` (no alias). It has exactly one preauth.check call site and catches preauth.PreauthRefused by name. It references no other preauth name (enforced by the regression rules in AC-006).",
+      "tests": [
+        "tests/test_preauth_wiring.py::StaticWiringTest::test_the_lane_imports_preauth_directly_at_module_level",
+        "tests/test_preauth_wiring.py::StaticWiringTest::test_the_lane_calls_preauth_check_and_catches_preauth_refused",
+        "tests/test_preauth_wiring.py::StaticWiringTest::test_the_lane_puts_its_own_scripts_directory_first_on_sys_path"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-002",
+      "statement": "Verifier pin at the call site: loading the lane with a hostile cwd and a hostile PYTHONPATH (each holding a fake preauth.py and verifier module) resolves `preauth` to this checkout's scripts/preauth.py. It resolves the verifier to scripts/preauth_verify.py, whose sha256 is 0a3ab62b134c0174d150ce25a9c18364a7685872914cf06c8eac36f9ee0d959b. The lane keeps a verbatim copy of the checker's closed refusal set as PREAUTH_REASONS.",
+      "tests": [
+        "tests/test_preauth_wiring.py::VerifierPinTest::test_the_lane_loads_the_base_checkout_preauth_and_pinned_verifier",
+        "tests/test_preauth_wiring.py::VerifierPinTest::test_the_lane_keeps_the_checker_refusal_set_verbatim"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-003",
+      "statement": "authorize_merge(verdict, facts, store, repo_slug, base_rev, now, ancestor) calls preauth.check once per candidate envelope, only with facts the lane measured:\n- the exact envelope bytes and the exact detached-signature bytes from the pinned store (envelopes/<name>.json and <name>.json.sig under DEFAULT_PREAUTH_DIR, read by load_preauth_store);\n- repo_slug;\n- the fetched base tip;\n- the contract_sha256 from the base lease provenance;\n- the tier from the decide() verdict;\n- the tz-aware UTC now;\n- the ledger.json object unchanged (None when it is missing or unreadable, never a fabricated default);\n- the lane's git ancestry callable.\nOnly a dict whose ok is exactly True, whose contract_sha256 equals the lease contract and whose envelope_id equals the envelope's own id authorizes. The decision then carries envelope_id, nonce and contract_sha256.",
+      "tests": [
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_check_receives_only_facts_the_lane_measured",
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_the_tier_comes_from_the_gate_verdict",
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_a_missing_ledger_is_passed_as_none_never_fabricated",
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_the_signed_bytes_are_passed_exactly",
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_an_ok_result_for_another_contract_is_not_an_authorization",
+        "tests/test_preauth_wiring.py::AuthorizeCallTest::test_a_non_true_ok_value_is_not_an_authorization",
+        "tests/test_preauth_wiring.py::RefusalTest::test_one_valid_envelope_among_refused_ones_authorizes",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_result_id_that_differs_from_the_envelope_id_is_refused"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-004",
+      "statement": "authorize_merge fails closed with named reasons:\n- preauth_not_reached: the verdict does not merge; check is not called.\n- preauth_contract_unknown: a non-slice PR, or a slice without base-lease provenance; check is not called.\n- preauth_base_unknown: the base tip was not measured; check is not called.\n- preauth_missing: there is no store or no envelope; check is not called.\n- preauth_refused: every envelope refused. refusals[] lists {envelope, reason}, where reason is one of:\n  - preauth_envelope_unreadable: not JSON, duplicate keys, or not an object; checked before check;\n  - preauth_action_mismatch: action_class is not merge_slice, so a dispatch_wave envelope never authorizes a merge; checked before check;\n  - preauth_signature_missing: checked before check;\n  - the checker's PreauthRefused.reason when it is in the closed set (expired, out of scope, over budget, bad signature, untrusted signer and the rest);\n  - preauth_refused_unknown: any other PreauthRefused reason;\n  - preauth_error: any other exception, whose text never appears in the decision or the output;\n  - preauth_result_invalid: a result that is not an authorization.\nWith the real checker and today's empty trust root, nothing is authorized.",
+      "tests": [
+        "tests/test_preauth_wiring.py::RefusalTest::test_no_envelope_refuses_preauth_missing_without_calling_check",
+        "tests/test_preauth_wiring.py::RefusalTest::test_no_store_at_all_refuses_preauth_missing",
+        "tests/test_preauth_wiring.py::RefusalTest::test_each_checker_refusal_refuses_the_merge_with_that_reason",
+        "tests/test_preauth_wiring.py::RefusalTest::test_an_unknown_refusal_reason_is_reported_as_unknown",
+        "tests/test_preauth_wiring.py::RefusalTest::test_any_other_exception_refuses_and_its_text_never_leaves_the_lane",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_dispatch_envelope_never_authorizes_a_merge",
+        "tests/test_preauth_wiring.py::RefusalTest::test_an_unparseable_or_duplicate_key_envelope_is_refused_before_check",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_missing_signature_is_refused_before_check",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_non_slice_pull_request_is_never_preauthorized",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_slice_without_lease_provenance_is_never_preauthorized",
+        "tests/test_preauth_wiring.py::RefusalTest::test_an_unmeasured_base_refuses_before_check",
+        "tests/test_preauth_wiring.py::RefusalTest::test_a_refused_decide_verdict_is_never_sent_to_check",
+        "tests/test_preauth_wiring.py::ProductionRefusesTest::test_with_the_real_checker_nothing_is_authorized_today"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-005",
+      "statement": "main() live path:\n- After decide() allows a merge, main() always consults authorize_merge. It reads the store from the module-level DEFAULT_PREAUTH_DIR at call time and the base tip from measure_base_rev(repo, base_ref), then sets verdict['preauth'].\n- A refusal sets merge false with the refusal reason and exit 1.\n- A dry run (no --merge) never merges and never writes the ledger.\n- With --merge, record_preauth_use atomically (temp file plus os.replace in the store) appends to the ledger before merge_pull_request is called:\n  - a consumed entry {envelope_id, contract_sha256, pr, head, at};\n  - nonces[nonce] = envelope_id;\n  - attempts[contract_sha256] incremented.\n- If the ledger cannot be read or written, the merge is refused with preauth_ledger_unwritable.\n- The output never carries envelope bytes, signature bytes or the token.\n- decide() and the --facts replay path are unchanged.",
+      "tests": [
+        "tests/test_preauth_wiring.py::MainPathTest::test_a_refused_envelope_blocks_the_merge",
+        "tests/test_preauth_wiring.py::MainPathTest::test_no_envelope_blocks_the_merge",
+        "tests/test_preauth_wiring.py::MainPathTest::test_dry_run_never_merges_and_never_records_a_use",
+        "tests/test_preauth_wiring.py::MainPathTest::test_merge_records_the_use_before_merging",
+        "tests/test_preauth_wiring.py::MainPathTest::test_an_unwritable_ledger_blocks_the_merge"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-007",
+      "statement": "main() feeds check() only what it measured, pinned field by field at main level:\n- measure_base_rev is called once as (args.repo, the PR's base ref) and check's base_rev is exactly its result; measure_base_rev returns origin/<ref>'s commit (not local HEAD or the local branch) and None for a missing, empty, blank, None, odd (main^{tree}), option-like (--all, -h) ref or a non-repo.\n- repo is args.repo_slug; contract_sha256 is the base lease's; tier is the gate verdict's (T1 and T2 included; a T1 slice still reaches check and never merges without ok); now is tz-aware UTC within seconds of the real clock; is_ancestor agrees with git merge-base --is-ancestor on the checkout; facts is the on-disk ledger verbatim, including non-empty revoked, consumed, nonces and attempts.\n- A non-slice PR that decide() would merge is refused preauth_contract_unknown at main level without calling check.\n- If load_preauth_store, authorize_merge, measure_base_rev or record_preauth_use raises, there is no merge, exit 1, reason preauth_internal_error, no exception text or traceback in the output, and the ledger is unchanged.\n- The store cannot be redirected: --preauth-dir is rejected by argparse, and no environment variable changes the store.\n- main() always consults the gate when decide() allows a merge, even if the store or its envelopes dir is absent: no envelopes dir is preauth_missing with no check() call and no merge; no store at all is preauth_lock_unavailable with no check() call and no merge.\n- The lock and the ledger stay inside the pinned store: no lock file, ledger or temp file appears in a directory named by PREAUTH_DIR, BUNDLEBEES_PREAUTH_DIR, RIZZSTACK_PREAUTH_DIR, MERGE_LANE_PREAUTH_DIR or PREAUTH_STORE.\n- bees_in_flight is passed to check() verbatim, including a nonzero value.",
+      "tests": [
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_main_feeds_check_exactly_the_facts_it_measured",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_a_t1_slice_still_reaches_check_and_never_merges_without_ok",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_a_non_slice_pull_request_is_refused_at_main_level",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_another_action_class_never_merges_at_main_level",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_any_failure_on_the_preauth_path_is_a_named_refusal",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_the_store_cannot_be_redirected_by_option_or_environment",
+        "tests/test_preauth_wiring.py::MeasureBaseRevTest::test_the_base_is_the_fetched_origin_tip_not_local_head_or_branch",
+        "tests/test_preauth_wiring.py::MeasureBaseRevTest::test_an_unmeasurable_base_is_none",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_main_without_an_envelopes_dir_never_merges",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_main_without_any_store_never_merges",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_the_lock_follows_the_pinned_store_not_the_environment",
+        "tests/test_preauth_wiring.py::MainCallPinTest::test_bees_in_flight_reaches_check_verbatim"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-008",
+      "statement": "Action allow-list and conditions, both enforced by the lane before check():\n- Only the exact string merge_slice is accepted. Every other action class (dispatch_wave, refreeze_contract, vendor_sync, close_superseded_pr), a missing action, non-strings (1, 0, true, null, a list, an object) and case, whitespace, punctuation, NUL and truncation near-misses are refused preauth_action_mismatch and check is not called. One case is also pinned at main level.\n- The lane evaluates no condition yet, so an envelope whose conditions is anything but an empty list (any entry, a missing key, null, an object, a string, 0, false) is refused with the new lane reason preauth_conditions_unevaluated before check.\n- Both the facts' class and the verdict's class must equal slice exactly; otherwise preauth_contract_unknown even when lease provenance is present.\n- A non-empty ledger reaches check verbatim.\n- A lease contract hash that is not 64 lowercase hex (too short, too long, non-hex, or a non-string-like token) is refused preauth_contract_unknown before check().",
+      "tests": [
+        "tests/test_preauth_wiring.py::ActionAndConditionTest::test_every_action_but_merge_slice_is_refused_before_check",
+        "tests/test_preauth_wiring.py::ActionAndConditionTest::test_any_condition_is_refused_as_unevaluated_before_check",
+        "tests/test_preauth_wiring.py::ActionAndConditionTest::test_both_the_facts_and_the_verdict_must_say_slice",
+        "tests/test_preauth_wiring.py::ActionAndConditionTest::test_a_non_empty_ledger_reaches_check_verbatim",
+        "tests/test_preauth_wiring.py::ActionAndConditionTest::test_a_malformed_lease_contract_is_never_preauthorized"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-009",
+      "statement": "The store lock and the ledger write (the API W2 reuses):\n- PREAUTH_LOCK_NAME is 'ledger.lock'; PREAUTH_LEDGER_KEYS is (revoked, consumed, nonces, attempts, bees_in_flight); PREAUTH_USE_KEYS is (envelope_id, nonce, contract_sha256, pr, head, at); preauth_lock(directory) exists.\n- main() holds an exclusive fcntl.flock on <store>/ledger.lock across load_preauth_store, the one preauth.check call, record_preauth_use and the merge call, and releases it when main returns. It never waits: a held lock is the named refusal preauth_lock_busy, and a lock file that cannot be opened is preauth_lock_unavailable; neither calls check or merges.\n- Two concurrent lane processes with one single-use envelope merge exactly once and record exactly one use; the other refuses (preauth_lock_busy or preauth_refused).\n- A recorded use has exactly PREAUTH_USE_KEYS (at is UTC, second precision, Z) and keeps every existing ledger entry.\n- record_preauth_use never replaces a corrupt, duplicate-key, non-object, empty or missing ledger (returns False, writes nothing). A failed os.replace leaves the old ledger byte-identical and no temp file behind. The temp file is fsynced before os.replace and the directory after it.\n- A merge that fails after the use is recorded keeps the recorded use (fail closed); the owner re-signs.\n- The ledger temp file is created in the same directory as ledger.json, so os.replace is atomic and same-filesystem.\n- If merge_pull_request raises, main() refuses with merge_failed, keeps the recorded use, releases the lock, and emits no exception text or traceback.",
+      "tests": [
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_the_store_api_is_frozen",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_the_lock_is_held_across_load_check_record_and_merge",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_a_held_lock_is_a_named_refusal_and_never_merges",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_an_unopenable_lock_is_a_named_refusal",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_two_concurrent_lane_runs_never_spend_one_use_twice",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_a_failed_merge_keeps_its_recorded_use",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_a_recorded_use_has_exactly_the_frozen_keys",
+        "tests/test_preauth_wiring.py::RecordUseTest::test_a_corrupt_or_missing_ledger_is_never_replaced",
+        "tests/test_preauth_wiring.py::RecordUseTest::test_a_failed_replace_keeps_the_old_ledger_and_leaves_no_temp_file",
+        "tests/test_preauth_wiring.py::RecordUseTest::test_the_new_ledger_is_fsynced_before_and_the_directory_after_the_replace",
+        "tests/test_preauth_wiring.py::LockAndLedgerTest::test_a_raising_merge_call_refuses_keeps_the_use_and_releases_the_lock",
+        "tests/test_preauth_wiring.py::RecordUseTest::test_the_temp_file_is_created_next_to_the_ledger"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-010",
+      "statement": "End to end with the real checker: a scratch copy of scripts/preauth.py, the pinned verifier and policy/preauth.md, with a throwaway ed25519 key in the copy's allowed_signers and OWNER_FINGERPRINTS (nothing in the checkout changes), driven through main() with a real git checkout:\n- one signed merge_slice envelope merges once and records its use; the second run is refused envelope_replayed;\n- signed vendor_sync, close_superseded_pr, dispatch_wave and refreeze_contract envelopes are refused preauth_action_mismatch, and a signed envelope with a condition is refused preauth_conditions_unevaluated;\n- an expired envelope is refused envelope_expired and tampered bytes envelope_bad_signature.",
+      "tests": [
+        "tests/test_preauth_wiring.py::RealCheckerTest::test_one_signed_envelope_merges_once_and_the_replay_is_refused",
+        "tests/test_preauth_wiring.py::RealCheckerTest::test_other_actions_and_conditions_never_authorize_with_the_real_checker",
+        "tests/test_preauth_wiring.py::RealCheckerTest::test_expired_and_tampered_envelopes_are_refused_by_the_real_checker"
+      ],
+      "verification": "test"
+    },
+    {
+      "id": "AC-006",
+      "regression": true,
+      "statement": "Regression and guards (these pass at RED and must keep passing):\n- Nothing frozen changes. The following stay byte-identical: scripts/preauth.py, scripts/preauth_verify.py (sha256 0a3ab62b\u2026), policy/**, .github/**, contracts/preauth-wiring.requirements.json and every existing test and fixture.\n- The GROKCHAT round-5 strict wiring rule holds for every .py file under .github/ and scripts/, and its five verbatim must-fail cases from contracts/preauth-wiring.requirements.json are caught.\n- A decide() refusal never reaches check.\n- The lane output never carries envelope bytes, signature bytes or the token.\n- The frozen suites (WiringFreezeTest, FrozenVerifyModuleTest, SharedPolicyContractTests and the rest) are run by the verification commands, not cited here: they live in read-only files outside scope.test_files (GROKCHAT W1-1 B1).\n- The full suite passes under pytest and `python3 -m unittest discover -s tests`.",
+      "tests": [
+        "tests/test_preauth_wiring.py::StaticWiringTest::test_strict_must_fail_fixtures_are_caught",
+        "tests/test_preauth_wiring.py::StaticWiringTest::test_every_python_file_under_github_and_scripts_obeys_the_strict_rule",
+        "tests/test_preauth_wiring.py::MainPathTest::test_a_refused_decide_verdict_never_reaches_check",
+        "tests/test_preauth_wiring.py::MainPathTest::test_the_output_never_carries_envelope_or_signature_bytes"
+      ],
+      "verification": "test"
+    }
+  ],
+  "assumptions": [
+    "The lane is run from a trusted checkout of the default branch (as today), so its own scripts/ directory is the base checkout.",
+    "The pinned store is lane-owned state on the coordinator host, like the verify-results store; the owner places signed envelopes there, and agents never create or widen them (policy/preauth.md)."
+  ],
+  "authorization": {
+    "human_gates": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish"
+    ],
+    "not_authorized": [
+      "merge",
+      "tag",
+      "release",
+      "deploy",
+      "publish",
+      "restart",
+      "force-push",
+      "branch deletion",
+      "edit approved tests",
+      "ruleset or settings changes",
+      "adding a key to policy/allowed_signers or the fingerprint pin",
+      "enabling auto-merge",
+      "creating or signing an envelope"
+    ]
+  },
+  "contract_version": "acdd/1",
+  "dependencies": [
+    "preauth-envelope r7 (fcf5664b, landed in #50 at dee3740a)",
+    "gate-authority r5 (#49)"
+  ],
+  "evidence_required": [
+    "red",
+    "green",
+    "review",
+    "security"
+  ],
+  "id": "preauth-wiring-w1",
+  "interfaces": [
+    {
+      "change": "modify",
+      "kind": "module",
+      "name": "merge_lane_v5 imports preauth",
+      "notes": "sys.path.insert(0, own scripts dir) then top-level `import preauth`; only preauth.check and preauth.PreauthRefused are used"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "DEFAULT_PREAUTH_DIR",
+      "notes": "module constant '~/.hermes/plugin-data/bundlebees/preauth'; layout envelopes/<name>.json + <name>.json.sig, ledger.json; no CLI override (pinned like the verify store)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PREAUTH_ACTION",
+      "notes": "'merge_slice'"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PREAUTH_REASONS",
+      "notes": "verbatim copy of preauth.REFUSAL_REASONS (22 reasons)"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "load_preauth_store",
+      "notes": "load_preauth_store(directory) -> {'envelopes': [{'name','data','signature'}], 'ledger': dict|None}"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "measure_base_rev",
+      "notes": "measure_base_rev(repo, base_ref) -> 40-hex sha of origin/<base_ref> or None"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "authorize_merge",
+      "notes": "authorize_merge(verdict, facts, store, repo_slug, base_rev, now, ancestor) -> decision dict"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "record_preauth_use",
+      "notes": "record_preauth_use(directory, decision, number, head, now) -> bool; caller holds preauth_lock; appends one PREAUTH_USE_KEYS entry, sets nonces[nonce]=envelope_id, attempts[contract]+=1; temp file fsynced, os.replace, directory fsynced; never replaces a bad ledger"
+    },
+    {
+      "change": "modify",
+      "kind": "function",
+      "name": "main",
+      "notes": "after decide() allows a merge, main() enters preauthorize() inside a contextlib.ExitStack that also wraps the merge call; the store lock stays held until the merge returns; --merge only"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PREAUTH_LOCK_NAME",
+      "notes": "'ledger.lock' in the store directory; exclusive fcntl.flock, non-blocking (frozen for W2)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PREAUTH_LEDGER_KEYS",
+      "notes": "('revoked','consumed','nonces','attempts','bees_in_flight') (frozen ledger schema for W2)"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PREAUTH_USE_KEYS",
+      "notes": "('envelope_id','nonce','contract_sha256','pr','head','at') (frozen use-entry schema for W2)"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "preauth_lock",
+      "notes": "preauth_lock(directory): context manager; raises PreauthLockBusy if held, OSError if the lock file cannot be opened; never creates the store; closing releases"
+    },
+    {
+      "change": "add",
+      "kind": "other",
+      "name": "PreauthLockBusy",
+      "notes": "lane exception for a held store lock"
+    },
+    {
+      "change": "add",
+      "kind": "function",
+      "name": "preauthorize",
+      "notes": "preauthorize(verdict, facts, pr, head, args, ancestor, stack): takes the lock on stack, measures, authorizes, records (with --merge); refuses into verdict with a named reason; catches any unexpected exception as preauth_internal_error"
+    }
+  ],
+  "notes": [
+    "Draft only, not approved. W1 of the preauth-wiring split, round 3 (GROKCHAT W1-2 blocker N1 and advisories). red/preauth-wiring: RED 16fd7149 (W1-1) plus tests-only 47b0268b (W1-2) plus tests-only 6c2ffc76 (W1-3), on main dee3740a; together they add tests/test_preauth_wiring.py and five fixtures under tests/fixtures/preauth_wiring/. At RED, 63 of the 67 new tests fail as failures, with 0 errors under unittest (105 failures counting subtests); they are exactly the RED set of AC-001 to AC-005 and AC-007 to AC-010. The 4 that pass are the AC-006 guards. Full suite at RED: 63 failed, 539 passed.",
+    "A throwaway prototype (scripts/merge_lane_v5.py only, not committed) passes all 67 new tests, the frozen preauth, lane and gate suites, and the full suite (602 under pytest; 602 OK under unittest discover). The W1-2 prototype already passed N1's two tests and most advisories; W1-3 adds a main() handler so a raising merge_pull_request is merge_failed, keeps the use, releases the lock and leaks no exception text. Mutation check: 73 of 73 variants fail the tests (the W1-2 set of 66, retargeted where the merge-block indent changed, plus N1's gate_skipped_when_envelopes_dir_absent and the advisory variants record_tmp_in_system_tmp, preauth_dir_from_env, authorize_bees_in_flight_zeroed, contract_format_not_checked, merge_exception_swallowed_as_merged and merge_exception_propagates).",
+    "Effect on operations: production trust is empty, so after W1 lands the lane merges nothing, slice or non-slice, until the owner enrols a key in a separate owner-reviewed change (policy/allowed_signers plus the OWNER_FINGERPRINTS pin). Hermes's standing lane auto-merge therefore stops; owner-typed merges are unaffected. Sequence the landing on purpose.",
+    "Ledger schema and lock API are frozen by W1 (AC-009): store layout envelopes/<name>.json + <name>.json.sig and ledger.json; ledger keys PREAUTH_LEDGER_KEYS; use entries PREAUTH_USE_KEYS; one exclusive non-blocking fcntl.flock on <store>/ledger.lock held across read, check, record and the action. Every writer must use it.",
+    "W2 is dispatch, in mojomast/bundlebees, as a separate contract cut after W1 is approved (GROKCHAT agreed: different repo and trust boundary). Dispatch (bundlebees_plugin.tools._dispatch and bundlebees_plugin.preflight, which the coordinator's box orchestrator also runs) will refuse unless a vendored, sha-pinned preauth.check accepts a dispatch_wave envelope listing the brief's contract_sha256 at its tier with launcher-measured bees_in_flight. W2 reuses W1's ledger schema and lock API rather than inventing its own.",
+    "A failed merge burns its recorded use (AC-009). That is fail closed: the use is written before the merge call, and a merge that then fails or cannot be verified keeps it. The owner re-signs a new envelope.",
+    "Follow-up contract (not W1): evaluating envelope conditions P1-P5 from measured data, the review block (t3_reviewer_login against the counted reviewer), and matching the lease's source_rev against the envelope's contract entry. Until then W1 refuses any non-empty conditions list (preauth_conditions_unevaluated, AC-008); review and source_rev are type-checked by the checker only. Trust is empty today, so there is no live exposure; this must land before the owner enrols a key.",
+    "Gate not wired (GROKCHAT A8): lease_tamper.py only classifies and never authorizes a merge, so the gate half of the round-6 trap requirement (contracts/preauth-wiring.requirements.json r6[4]) is N/A for W1; the frozen WiringFreezeTest still traps it.",
+    "Other recorded items: the base is measured from origin/<ref>; the gate fetches only origin/main, so for another base ref the tip is as old as the last fetch (fail safe; GROKCHAT A5). The store path is built from ~ and so depends on HOME, like the verify store (A4; unchanged). The S1 advisory to restrict the lane to the default branch would break S1's frozen release/* tests (AC-029) and stays an owner ruleset decision. The copied/changed compare-status advisory already landed. The digest comes later.",
+    "Dry-run takes the lock (design choice, recorded). A read-only poll can make a concurrent --merge run see preauth_lock_busy; the lock is non-blocking, so there is no hang, only a lost run the caller can retry. Locking only for --merge would need a later change; W1 keeps one lock path for dry-run and merge.",
+    "A directory fsync failure after a successful os.replace makes record_preauth_use return False, so the lane refuses with preauth_ledger_unwritable and the use already recorded. That burns the use, which is fail-closed (same as a failed merge). The owner re-signs. Documented with the failed-merge note.",
+    "The suite needs ssh-keygen for AC-010 (the real-checker integration), as the frozen preauth tests already do. CI has it.",
+    "GROKCHAT W1-2 closed B1-B5. N1 (the gate skipped when the envelopes dir is absent) is addressed in AC-007."
+  ],
+  "outcome": {
+    "observable_behavior": [
+      "the lane never merges without a valid merge_slice envelope from the pinned store that lists the slice's base-lease contract",
+      "missing, invalid, expired, out-of-scope and out-of-budget envelopes are named refusals, and no merge happens",
+      "with today's empty trust root (no key enrolled, OWNER_FINGERPRINTS ()), the lane authorizes nothing, so lane merges stay off",
+      "the default stays a dry run; --merge records the use in the ledger before merging",
+      "an exclusive flock on the store's ledger.lock is held from loading the ledger until the merge call returns, so one use can never be spent twice",
+      "only exact merge_slice envelopes with no conditions reach the checker; conditions are refused until a follow-up contract evaluates them",
+      "any unexpected failure on the preauth path is the named refusal preauth_internal_error, never a traceback"
+    ],
+    "summary": "Merge lane v5 refuses to merge unless preauth.check accepts a signed merge_slice envelope for the slice's contract, using only facts the lane measured; with today's empty trust root it merges nothing."
+  },
+  "review": {
+    "approved_at": "2026-11-28T10:17:45-05:00",
+    "approved_by": "Kyle (mojomast, owner) typed: approved: 3c340f46 (preauth-wiring W1: merge lane wiring of the signed pre-authorization, round W1-3), 2026-11-28",
+    "contract_sha256": "3c340f467e51e7acea268bbd8d0669d4735895a9024838641126e96a1349a8ee",
+    "status": "approved"
+  },
+  "risk": {
+    "blast_radius": "every merge the lane performs; non-slice PRs (lease landings, gate/lane/policy changes) can never be lane-merged once this lands",
+    "reasons": [
+      "merge-lane control surface",
+      "authorization wiring"
+    ],
+    "tier": "high"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/merge_lane_v5.py"
+    ],
+    "prohibited": [
+      ".github/**",
+      ".rizzstack/**",
+      "CHANGELOG.md",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "scripts/preauth.py",
+      "scripts/preauth_verify.py",
+      "policy/**",
+      "contracts/preauth-wiring.requirements.json",
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/test_preauth_r7_blockers.py",
+      "tests/test_merge_lane_v5.py",
+      "tests/test_gate_authority.py",
+      "tests/test_lease_tamper.py",
+      "tests/fixtures/**"
+    ],
+    "test_files": [
+      "tests/test_preauth_wiring.py",
+      "tests/fixtures/preauth_wiring/**"
+    ]
+  },
+  "source_rev": "6c2ffc76ab301bf2beea27dcc118332e95b099db",
+  "supersedes": [],
+  "tdd": {
+    "applicable": true
+  },
+  "title": "preauth-wiring W1: merge lane v5 requires a valid signed preauth envelope (preauth.check with lane-measured facts) before it merges",
+  "verification": {
+    "commands": [
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests/test_preauth_wiring.py tests/test_preauth_envelope.py tests/test_preauth_policy.py tests/test_preauth_r7_blockers.py tests/test_merge_lane_v5.py tests/test_gate_authority.py",
+      "env -u PYTHONPATH python3 -m pytest -q -p no:cacheprovider tests",
+      "env -u PYTHONPATH python3 -m unittest discover -s tests"
+    ],
+    "independent": true,
+    "integration": false
+  }
+}
