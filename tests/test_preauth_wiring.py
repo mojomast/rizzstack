@@ -19,7 +19,12 @@ signed pre-authorization is consulted on that path. This suite freezes the wirin
   check, record and the merge call; the ledger write is fsynced and atomic; a failed merge
   keeps its recorded use; any unexpected failure is the named refusal
   ``preauth_internal_error``; and one end-to-end run uses the real checker with a throwaway
-  key in a scratch copy of the trust root.
+  key in a scratch copy of the trust root;
+* (W1-3) main() still runs the gate when the store, or just its envelopes dir, is absent
+  (preauth_missing / preauth_lock_unavailable); the ledger temp file is created next to
+  the ledger; a malformed lease contract hash is refused before check(); a raising
+  merge_pull_request is a named refusal that keeps the recorded use and releases the lock;
+  bees_in_flight is passed through verbatim, including a nonzero value.
 
 Production trust is empty (policy/allowed_signers has no keys, OWNER_FINGERPRINTS is ()), so
 after this slice the lane authorizes nothing until the owner enrols a key in a later,
@@ -227,7 +232,7 @@ RICH_LEDGER = {
                   "pr": 49, "head": "e" * 40, "at": "2026-11-27T12:00:00Z"}],
     "nonces": {"nonce-old": "env-old"},
     "attempts": {OTHER_CONTRACT: 1},
-    "bees_in_flight": 0,
+    "bees_in_flight": 3,
 }
 
 #: The frozen store API that W2 (bundlebees dispatch) reuses.
@@ -886,6 +891,51 @@ class MainCallPinTest(MainHarness):
         self.assertEqual(merges, [])
         self.assertEqual(verdict["reason"], "preauth_missing")
 
+    def test_main_without_an_envelopes_dir_never_merges(self):
+        root = self.store(())
+        shutil.rmtree(root / "envelopes")
+        stub = StubPreauth([("ok", ok_result())])
+        code, verdict, merges, ledger, _ = self.run_main(stub, merge=True, store=root)
+        self.assertEqual(merges, [])
+        self.assertEqual(code, 1)
+        self.assertEqual(stub.calls, [])
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "preauth_missing")
+        self.assertEqual(ledger, LEDGER)
+
+    def test_main_without_any_store_never_merges(self):
+        root = Path(tempfile.mkdtemp(prefix="preauth-wiring-nostore-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        shutil.rmtree(root)
+        stub = StubPreauth([("ok", ok_result())])
+        code, verdict, merges, _, text = self.run_main(stub, merge=True, store=root)
+        self.assertEqual(merges, [])
+        self.assertEqual(code, 1)
+        self.assertEqual(stub.calls, [])
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "preauth_lock_unavailable")
+
+    def test_the_lock_follows_the_pinned_store_not_the_environment(self):
+        decoy = Path(tempfile.mkdtemp(prefix="preauth-wiring-decoy-"))
+        self.addCleanup(shutil.rmtree, decoy, True)
+        stub = StubPreauth([("ok", ok_result())])
+        env = {name: str(decoy) for name in ("PREAUTH_DIR", "BUNDLEBEES_PREAUTH_DIR", "RIZZSTACK_PREAUTH_DIR",
+                                             "MERGE_LANE_PREAUTH_DIR", "PREAUTH_STORE")}
+        code, verdict, merges, _, _ = self.run_main(stub, merge=True, env=env)
+        self.assertEqual(code, 0, verdict)
+        self.assertEqual(len(merges), 1)
+        self.assertEqual(os.listdir(decoy), [], "no lock or ledger may appear outside the pinned store")
+        self.assertTrue((self.root / LOCK_NAME).exists())
+
+    def test_bees_in_flight_reaches_check_verbatim(self):
+        ledger = dict(RICH_LEDGER, bees_in_flight=3)
+        stub = StubPreauth([("refuse", "envelope_budget_exhausted")])
+        code, verdict, merges, _, _ = self.run_main(stub, merge=True, ledger=ledger)
+        self.assertEqual(len(stub.calls), 1, verdict)
+        self.assertEqual(stub.calls[0]["facts"]["bees_in_flight"], 3)
+        self.assertEqual(stub.calls[0]["facts"], ledger)
+        self.assertEqual(merges, [])
+
 
 class MeasureBaseRevTest(LaneTestCase):
     @classmethod
@@ -949,7 +999,17 @@ class ActionAndConditionTest(LaneTestCase):
         decision = self.authorize(stub, ledger=RICH_LEDGER)
         self.assertEqual(len(stub.calls), 1)
         self.assertEqual(stub.calls[0]["facts"], RICH_LEDGER)
+        self.assertEqual(stub.calls[0]["facts"]["bees_in_flight"], 3)
         self.assertFalse(decision.get("ok"))
+
+    def test_a_malformed_lease_contract_is_never_preauthorized(self):
+        for bad in ("not-a-hash", CONTRACT[:-1], CONTRACT + "0", "z" * 64, "g" * 63 + "!"):
+            with self.subTest(contract=bad):
+                stub = StubPreauth([("ok", ok_result())])
+                decision = self.authorize(stub, facts=slice_facts(contract=bad))
+                self.assertEqual(stub.calls, [])
+                self.assertFalse(decision.get("ok"), decision)
+                self.assertEqual(decision.get("reason"), "preauth_contract_unknown", bad)
 
 
 # --------------------------------------------------------------- AC-009 the store lock and the ledger write
@@ -1074,6 +1134,27 @@ class LockAndLedgerTest(MainHarness):
         self.assertEqual(ledger["nonces"], {"nonce-old": "env-old", "nonce-1": "env-1"})
         self.assertEqual(ledger["attempts"], {OTHER_CONTRACT: 1, CONTRACT: 1})
         self.assertEqual(ledger["revoked"], ["env-old"])
+        self.assertEqual(ledger["bees_in_flight"], 3)
+
+    def test_a_raising_merge_call_refuses_keeps_the_use_and_releases_the_lock(self):
+        stub = StubPreauth([("ok", ok_result())])
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("SECRET-TEXT-9")
+
+        try:
+            code, verdict, merges, ledger, text = self.run_main(stub, merge=True, patches={"merge_pull_request": boom})
+        except RuntimeError as exc:
+            self.fail("main() let merge_pull_request raise: %s" % exc)
+        self.assertEqual(merges, [])
+        self.assertEqual(code, 1)
+        self.assertFalse(verdict["merge"])
+        self.assertEqual(verdict["reason"], "merge_failed")
+        self.assertEqual([entry["envelope_id"] for entry in ledger["consumed"]], ["env-1"],
+                         "a raising merge burns its use; the owner re-signs")
+        self.assertFalse(lock_is_held(self.root), "the lock is released even when the merge call raises")
+        self.assertNotIn("SECRET-TEXT-9", text)
+        self.assertNotIn("Traceback", text)
 
 
 class RecordUseTest(LaneTestCase):
@@ -1133,6 +1214,22 @@ class RecordUseTest(LaneTestCase):
         cut = events.index("replace")
         self.assertIn("fsync", events[:cut], "the temp file is fsynced before it replaces the ledger")
         self.assertIn("fsync", events[cut + 1:], "the directory is fsynced after the replace")
+
+    def test_the_temp_file_is_created_next_to_the_ledger(self):
+        lane = load_lane(StubPreauth())
+        record = self.need(lane, "record_preauth_use")
+        root = self.store()
+        seen = []
+        real = os.replace
+
+        def spy(src, dst, *args, **kwargs):
+            seen.append((os.path.dirname(os.path.abspath(src)), os.path.dirname(os.path.abspath(dst))))
+            return real(src, dst, *args, **kwargs)
+
+        with mock.patch.object(lane.os, "replace", side_effect=spy):
+            result = record(str(root), self.decision(), 50, HEAD, datetime.now(timezone.utc))
+        self.assertIs(result, True)
+        self.assertEqual(seen, [(str(root), str(root))], "same directory, so os.replace is atomic")
 
 
 RACE_DRIVER = r'''
