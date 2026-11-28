@@ -1,0 +1,51 @@
+{
+  "branch": "feat/preauth-wiring",
+  "contract_id": "preauth-wiring-w1",
+  "contract_sha256": "3c340f467e51e7acea268bbd8d0669d4735895a9024838641126e96a1349a8ee",
+  "derived_from": {
+    "approved_at": "2026-11-28T10:17:45-05:00",
+    "approved_by": "Kyle (mojomast, owner) typed: approved: 3c340f46 (preauth-wiring W1: merge lane wiring of the signed pre-authorization, round W1-3), 2026-11-28",
+    "contract": ".rizzstack/contracts/3c340f467e51e7acea268bbd8d0669d4735895a9024838641126e96a1349a8ee.json"
+  },
+  "id": "preauth-wiring",
+  "lease_version": "rizzstack.lease/1",
+  "review": {
+    "approved_at": "2026-11-28T10:17:45-05:00",
+    "approved_by": "Kyle (mojomast, owner) typed: approved: 3c340f46 (preauth-wiring W1: merge lane wiring of the signed pre-authorization, round W1-3), 2026-11-28",
+    "note": "contract_sha256 names the approved frozen contract; scope and source_rev are its verbatim scope",
+    "status": "frozen"
+  },
+  "scope": {
+    "assigned_files": [
+      "scripts/merge_lane_v5.py"
+    ],
+    "prohibited": [
+      ".github/**",
+      ".rizzstack/**",
+      "CHANGELOG.md",
+      "conftest.py",
+      "**/conftest.py",
+      "pyproject.toml"
+    ],
+    "read_only": [
+      "scripts/preauth.py",
+      "scripts/preauth_verify.py",
+      "policy/**",
+      "contracts/preauth-wiring.requirements.json",
+      "tests/test_preauth_envelope.py",
+      "tests/test_preauth_policy.py",
+      "tests/test_preauth_r7_blockers.py",
+      "tests/test_merge_lane_v5.py",
+      "tests/test_gate_authority.py",
+      "tests/test_lease_tamper.py",
+      "tests/fixtures/**"
+    ],
+    "test_files": [
+      "tests/test_preauth_wiring.py",
+      "tests/fixtures/preauth_wiring/**"
+    ]
+  },
+  "slice": "preauth-wiring",
+  "source_rev": "6c2ffc76ab301bf2beea27dcc118332e95b099db",
+  "verify_sha": "6c2ffc76ab301bf2beea27dcc118332e95b099db"
+}
